@@ -9,16 +9,21 @@ import argparse
 
 import sys
 import cv2
+import model
 
 import torch
 from torch.utils.data import Dataset, DataLoader
 from torchvision import datasets, models, transforms
 
 from dataloader import CocoDataset, CSVDataset, collater, Resizer, AspectRatioBasedSampler, Augmenter, UnNormalizer, Normalizer
+from oid_dataset import OidDataset
 
 
-assert torch.__version__.split('.')[1] == '4'
+# assert torch.__version__.split('.')[1] == '4'
 
+use_gpu = False
+if not use_gpu:
+	os.environ["CUDA_VISIBLE_DEVICES"]=""
 print('CUDA available: {}'.format(torch.cuda.is_available()))
 
 
@@ -26,16 +31,20 @@ def main(args=None):
 	parser = argparse.ArgumentParser(description='Simple training script for training a RetinaNet network.')
 
 	parser.add_argument('--dataset', help='Dataset type, must be one of csv or coco.')
-	parser.add_argument('--coco_path', help='Path to COCO directory')
+	parser.add_argument('--data_path', help='Path to COCO directory')
 	parser.add_argument('--csv_classes', help='Path to file containing class list (see readme)')
 	parser.add_argument('--csv_val', help='Path to file containing validation annotations (optional, see readme)')
 
 	parser.add_argument('--model', help='Path to model (.pt) file.')
+	parser.add_argument('--depth', help='Resnet depth, must be one of 18, 34, 50, 101, 152', type=int, default=50)
 
 	parser = parser.parse_args(args)
 
 	if parser.dataset == 'coco':
-		dataset_val = CocoDataset(parser.coco_path, set_name='val2017', transform=transforms.Compose([Normalizer(), Resizer()]))
+		dataset_val = CocoDataset(parser.data_path, set_name='val2017', transform=transforms.Compose([Normalizer(), Resizer()]))
+	elif parser.dataset == 'openimages':
+		dataset_val = OidDataset(parser.data_path, subset='validation',
+								transform=transforms.Compose([Normalizer(), Resizer(min_side=400, max_side=600)]))
 	elif parser.dataset == 'csv':
 		dataset_val = CSVDataset(train_file=parser.csv_train, class_list=parser.csv_classes, transform=transforms.Compose([Normalizer(), Resizer()]))
 	else:
@@ -44,9 +53,23 @@ def main(args=None):
 	sampler_val = AspectRatioBasedSampler(dataset_val, batch_size=1, drop_last=False)
 	dataloader_val = DataLoader(dataset_val, num_workers=1, collate_fn=collater, batch_sampler=sampler_val)
 
-	retinanet = torch.load(parser.model)
+	# Create the model
+	if parser.depth == 18:
+		retinanet = model.resnet18(num_classes=dataset_val.num_classes(), pretrained=False)
+	elif parser.depth == 34:
+		retinanet = model.resnet34(num_classes=dataset_val.num_classes(), pretrained=False)
+	elif parser.depth == 50:
+		retinanet = model.resnet50(num_classes=dataset_val.num_classes(), pretrained=False)
+	elif parser.depth == 101:
+		retinanet = model.resnet101(num_classes=dataset_val.num_classes(), pretrained=False)
+	elif parser.depth == 152:
+		retinanet = model.resnet152(num_classes=dataset_val.num_classes(), pretrained=False)
+	else:
+		raise ValueError('Unsupported model depth, must be one of 18, 34, 50, 101, 152')
 
-	use_gpu = True
+	checkpoint = torch.load(parser.model, map_location=lambda storage, loc: storage)
+	weights = checkpoint['model']
+	retinanet.load_state_dict(weights)
 
 	if use_gpu:
 		retinanet = retinanet.cuda()
@@ -65,7 +88,11 @@ def main(args=None):
 
 		with torch.no_grad():
 			st = time.time()
-			scores, classification, transformed_anchors = retinanet(data['img'].cuda().float())
+			if use_gpu:
+				data_img = data['img'].cuda()
+			else:
+				data_img = data['img']
+			scores, classification, transformed_anchors = retinanet(data_img.float())
 			print('Elapsed time: {}'.format(time.time()-st))
 			idxs = np.where(scores>0.5)
 			img = np.array(255 * unnormalize(data['img'][0, :, :, :])).copy()

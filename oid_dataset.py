@@ -1,9 +1,10 @@
 from __future__ import print_function, division
 
 import csv
-import json
+import pickle
 import os
 import warnings
+import tqdm
 
 import numpy as np
 import skimage
@@ -14,9 +15,9 @@ from PIL import Image
 from torch.utils.data import Dataset
 
 
-def get_labels(metadata_dir, version='v4'):
-    if version == 'v4' or version == 'challenge2018':
-        csv_file = 'class-descriptions-boxable.csv' if version == 'v4' else 'challenge-2018-class-descriptions-500.csv'
+def get_labels(metadata_dir, version='v5'):
+    if version == 'v4' or version == 'v5' or version == 'challenge2018':
+        csv_file = 'class-descriptions-boxable.csv' if version == 'v4' or version == 'v5' else 'challenge-2018-class-descriptions-500.csv'
 
         boxable_classes_descriptions = os.path.join(metadata_dir, csv_file)
         id_to_labels = {}
@@ -54,11 +55,11 @@ def get_labels(metadata_dir, version='v4'):
     return id_to_labels, cls_index
 
 
-def generate_images_annotations_json(main_dir, metadata_dir, subset, cls_index, version='v4'):
+def generate_images_annotations_json(main_dir, metadata_dir, subset, cls_index, version='v5'):
     validation_image_ids = {}
 
-    if version == 'v4':
-        annotations_path = os.path.join(metadata_dir, subset, '{}-annotations-bbox.csv'.format(subset))
+    if version == 'v4' or version == 'v5':
+        annotations_path = os.path.join(metadata_dir, '{}-annotations-bbox.csv'.format(subset))
     elif version == 'challenge2018':
         validation_image_ids_path = os.path.join(metadata_dir, 'challenge-2018-image-ids-valset-od.csv')
 
@@ -83,7 +84,7 @@ def generate_images_annotations_json(main_dir, metadata_dir, subset, cls_index, 
         next(reader)
 
         images_sizes = {}
-        for line, row in enumerate(reader):
+        for line, row in enumerate(tqdm.tqdm(reader)):
             frame = row['ImageID']
 
             if version == 'challenge2018':
@@ -106,9 +107,9 @@ def generate_images_annotations_json(main_dir, metadata_dir, subset, cls_index, 
             if version == 'challenge2018':
                 # We recommend participants to use the provided subset of the training set as a validation set.
                 # This is preferable over using the V4 val/test sets, as the training set is more densely annotated.
-                img_path = os.path.join(main_dir, 'images', 'train', frame + '.jpg')
+                img_path = os.path.join(main_dir, 'train', frame + '.jpg')
             else:
-                img_path = os.path.join(main_dir, 'images', subset, frame + '.jpg')
+                img_path = os.path.join(main_dir, subset, frame + '.jpg')
 
             if frame in images_sizes:
                 width, height = images_sizes[frame]
@@ -160,13 +161,15 @@ def generate_images_annotations_json(main_dir, metadata_dir, subset, cls_index, 
 class OidDataset(Dataset):
     """Oid dataset."""
 
-    def __init__(self, main_dir, subset, version='v4', annotation_cache_dir='.', transform=None):
+    def __init__(self, main_dir, subset, version='v5', annotation_cache_dir='.', transform=None):
         if version == 'v4':
             metadata = '2018_04'
         elif version == 'challenge2018':
             metadata = 'challenge2018'
         elif version == 'v3':
             metadata = '2017_11'
+        elif version == 'v5':
+            metadata = 'metadata'
         else:
             raise NotImplementedError('There is currently no implementation for versions older than v3')
 
@@ -175,20 +178,23 @@ class OidDataset(Dataset):
         if version == 'challenge2018':
             self.base_dir = os.path.join(main_dir, 'images', 'train')
         else:
-            self.base_dir = os.path.join(main_dir, 'images', subset)
+            self.base_dir = os.path.join(main_dir, subset)
 
         metadata_dir = os.path.join(main_dir, metadata)
-        annotation_cache_json = os.path.join(annotation_cache_dir, subset + '.json')
+        annotation_cache_pkl = os.path.join(annotation_cache_dir, subset + '.pkl')
 
         self.id_to_labels, cls_index = get_labels(metadata_dir, version=version)
 
-        if os.path.exists(annotation_cache_json):
-            with open(annotation_cache_json, 'r') as f:
-                self.annotations = json.loads(f.read())
+        if os.path.exists(annotation_cache_pkl):
+            print('Loading cached annotations: {}'.format(annotation_cache_pkl))
+            with open(annotation_cache_pkl, 'rb') as f:
+                self.annotations = pickle.load(f)
         else:
+            print('Caching annotations to file: {}'.format(annotation_cache_pkl))
             self.annotations = generate_images_annotations_json(main_dir, metadata_dir, subset, cls_index,
                                                                 version=version)
-            json.dump(self.annotations, open(annotation_cache_json, "w"))
+            with open(annotation_cache_pkl, "wb") as f:
+                pickle.dump(self.annotations, f)
 
         self.id_to_image_id = dict([(i, k) for i, k in enumerate(self.annotations)])
 
