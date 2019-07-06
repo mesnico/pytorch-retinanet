@@ -277,7 +277,7 @@ class ResNet(nn.Module):
             scores = scores[:, scores_over_thresh, :]
 
             # anchors_nms_idx = nms(torch.cat([transformed_anchors, scores], dim=2)[0, :, :], 0.5)
-            anchors_nms_idx = nms(transformed_anchors, scores, 0.5)
+            anchors_nms_idx = nms(transformed_anchors[0, :, :], scores[0, :, :], 0.5)
 
             nms_scores, nms_class = classification[0, anchors_nms_idx, :].max(dim=1)
 
