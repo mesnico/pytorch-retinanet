@@ -8,6 +8,7 @@ import sys
 import tqdm
 
 import numpy as np
+from collections import Counter
 
 import torch
 import torch.nn as nn
@@ -15,15 +16,17 @@ import torch.optim as optim
 from torch.optim import lr_scheduler
 from torch.autograd import Variable
 from torchvision import datasets, models, transforms
+from torchvision.models.detection import transform as dettransforms
 import torchvision
 from tensorboardX import SummaryWriter
 
-import model
+import retinanet_model
 from anchors import Anchors
 import losses
-from dataloader import CocoDataset, CSVDataset, collater, Resizer, AspectRatioBasedSampler, Augmenter, UnNormalizer, \
+from dataloader import CocoDataset, CSVDataset, collate_fn, Resizer, AspectRatioBasedSampler, Augmenter, UnNormalizer, \
     Normalizer
 from oid_dataset import OidDataset
+from create_model import create_model
 from torch.utils.data import Dataset, DataLoader
 
 import coco_eval
@@ -87,6 +90,7 @@ def main(args=None):
         if parser.data_path is None:
             raise ValueError('Must provide --data_path when training on OpenImages')
 
+        # TODO: handle transforms using torchvision 0.3 interface
         dataset_train = OidDataset(parser.data_path, subset='train',
                                    transform=transforms.Compose(
                                        [Normalizer(), Augmenter(), Resizer(min_side=400, max_side=600)]))
@@ -97,25 +101,14 @@ def main(args=None):
         raise ValueError('Dataset type not understood (must be csv or coco), exiting.')
 
     sampler = AspectRatioBasedSampler(dataset_train, batch_size=parser.bs, drop_last=False)
-    dataloader_train = DataLoader(dataset_train, num_workers=12, collate_fn=collater, batch_sampler=sampler)
+    dataloader_train = DataLoader(dataset_train, num_workers=12, collate_fn=collate_fn, batch_sampler=sampler)
 
     if dataset_val is not None:
         sampler_val = AspectRatioBasedSampler(dataset_val, batch_size=1, drop_last=False)
-        dataloader_val = DataLoader(dataset_val, num_workers=12, collate_fn=collater, batch_sampler=sampler_val)
+        dataloader_val = DataLoader(dataset_val, num_workers=12, collate_fn=collate_fn, batch_sampler=sampler_val)
 
     # Create the model
-    if parser.depth == 18:
-        retinanet = model.resnet18(num_classes=dataset_train.num_classes(), pretrained=True)
-    elif parser.depth == 34:
-        retinanet = model.resnet34(num_classes=dataset_train.num_classes(), pretrained=True)
-    elif parser.depth == 50:
-        retinanet = model.resnet50(num_classes=dataset_train.num_classes(), pretrained=True)
-    elif parser.depth == 101:
-        retinanet = model.resnet101(num_classes=dataset_train.num_classes(), pretrained=True)
-    elif parser.depth == 152:
-        retinanet = model.resnet152(num_classes=dataset_train.num_classes(), pretrained=True)
-    else:
-        raise ValueError('Unsupported model depth, must be one of 18, 34, 50, 101, 152')
+    model = create_model(dataset_train.num_classes(), parser)
 
     # Create the experiment folder
     experiment_fld = 'experiment_{}_resnet{}_{}'.format(parser.dataset, parser.depth,
@@ -129,12 +122,12 @@ def main(args=None):
     use_gpu = True
 
     if use_gpu:
-        retinanet = retinanet.cuda()
+        model = model.cuda()
 
-    retinanet = torch.nn.DataParallel(retinanet).cuda()
-    retinanet.training = True
+    model = torch.nn.DataParallel(model).cuda()
+    model.training = True
 
-    optimizer = optim.Adam(retinanet.parameters(), lr=1e-5)
+    optimizer = optim.Adam(model.parameters(), lr=1e-5)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, verbose=True)
 
     # Load checkpoint if needed
@@ -143,50 +136,62 @@ def main(args=None):
         print('Loading checkpoint {}'.format(parser.load))
         checkpoint = torch.load(parser.load)
         start_epoch = checkpoint['epoch']
-        retinanet.load_state_dict(checkpoint['model'])
+        model.load_state_dict(checkpoint['model'])
         optimizer.load_state_dict(checkpoint['optimizer'])
         scheduler.load_state_dict(checkpoint['scheduler'])
         print('Checkpoint loaded!')
 
     loss_hist = collections.deque(maxlen=500)
 
-    retinanet.train()
-    retinanet.module.freeze_bn()
+    model.train()
+    model.module.freeze_bn()
 
     print('Num training images: {}'.format(len(dataset_train)))
 
     for epoch_num in tqdm.trange(start_epoch, parser.epochs):
 
-        retinanet.train()
-        retinanet.module.freeze_bn()
+        model.train()
+        model.module.freeze_bn()
 
         epoch_loss = []
-        loss_mean = 0
+        losses_mean = {}
+        '''loss_mean = 0
         regression_loss_mean = 0
-        classification_loss_mean = 0
+        classification_loss_mean = 0'''
 
         data_progress = tqdm.tqdm(dataloader_train)
         for iter_num, data in enumerate(data_progress):
             optimizer.zero_grad()
 
-            classification_loss, regression_loss = retinanet([data['img'].cuda().float(), data['annot']])
-            classification_loss = classification_loss.mean()
-            regression_loss = regression_loss.mean()
-            loss = classification_loss + regression_loss
+            images, targets = data
+
+            images = list(image.cuda() for image in images)
+            targets = [{k: v.cuda() for k, v in t.items()} for t in targets]
+            #images, targets = images.cuda(), targets.cuda()
+
+            loss_dict = model(images, targets)
+            #classification_loss = classification_loss.mean()
+            #regression_loss = regression_loss.mean()
+            #loss = classification_loss + regression_loss
+            loss = sum(loss for loss in loss_dict.values())
+            if len(losses_mean) == 0:
+                losses_mean = loss.copy()
+            else:
+                losses_mean = Counter(loss) + Counter(loss_mean)
 
             # if bool(loss == 0):
             #	continue
 
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(retinanet.parameters(), 0.1)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.1)
             optimizer.step()
 
             loss_hist.append(float(loss))
             epoch_loss.append(float(loss))
 
-            loss_mean += loss
+            '''loss_mean += loss
             classification_loss_mean += classification_loss
-            regression_loss_mean += regression_loss
+            regression_loss_mean += regression_loss'''
 
             data_progress.set_postfix(dict(loss=float(loss)))
 
@@ -195,23 +200,28 @@ def main(args=None):
                 regression_loss_mean /= parser.log_interval
                 classification_loss_mean /= parser.log_interval
 
-                info = {
+                losses_mean['total_loss'] = loss
+                # compute the mean
+                losses_mean = {k: (v / parser.log_interval) for k, v in losses_mean.items()}
+
+                '''info = {
                     'total_loss': loss_mean,
                     'regression_loss': regression_loss_mean,
                     'classification_loss': classification_loss_mean
-                }
-                logger.add_scalars("logs/losses", info,
+                }'''
+                logger.add_scalars("logs/losses", losses_mean,
                                    epoch_num * len(dataloader_train) + iter_num)
 
-                loss_mean = 0
+                '''loss_mean = 0
                 regression_loss_mean = 0
-                classification_loss_mean = 0
+                classification_loss_mean = 0'''
+                losses_mean = {}
             # print('Epoch: {} | Iteration: {} | Classification loss: {:1.5f} | Regression loss: {:1.5f} | Running loss: {:1.5f}'.format(epoch_num, iter_num, float(classification_loss), float(regression_loss), np.mean(loss_hist)))
 
             if (iter_num + 1) % parser.checkpoint_interval == 0:
                 # Save an intermediate checkpoint
                 save_checkpoint({
-                    'model': retinanet.module.state_dict(),
+                    'model': model.module.state_dict(),
                     'optimizer': optimizer.state_dict(),
                     'scheduler': scheduler.state_dict(),
                     'epoch': epoch_num
@@ -221,25 +231,25 @@ def main(args=None):
 
             print('Evaluating dataset')
 
-            coco_eval.evaluate_coco(dataset_val, retinanet)
+            coco_eval.evaluate_coco(dataset_val, model)
 
         elif parser.dataset == 'csv' and parser.csv_val is not None:
 
             print('Evaluating dataset')
 
-            mAP = csv_eval.evaluate(dataset_val, retinanet)
+            mAP = csv_eval.evaluate(dataset_val, model)
 
         # TODO: write evaluation code for openimages
         scheduler.step(np.mean(epoch_loss))
 
         save_checkpoint({
-            'model': retinanet.state_dict(),
+            'model': model.state_dict(),
             'optimizer': optimizer.state_dict(),
             'scheduler': scheduler.state_dict(),
             'epoch': epoch_num,
         }, experiment_fld, overwrite=False)
 
-    retinanet.eval()
+    model.eval()
 
 
 # torch.save(retinanet, 'model_final.pt'.format(epoch_num))

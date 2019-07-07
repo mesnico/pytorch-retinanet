@@ -15,6 +15,7 @@ from PIL import Image
 from torch.utils.data import Dataset
 
 
+# TODO: understand if torchvision 0.3 models expect label 0 to be the background
 def get_labels(metadata_dir, version='v5'):
     if version == 'v4' or version == 'v5' or version == 'challenge2018':
         csv_file = 'class-descriptions-boxable.csv' if version == 'v4' or version == 'v5' else 'challenge-2018-class-descriptions-500.csv'
@@ -208,11 +209,14 @@ class OidDataset(Dataset):
 
         img = self.load_image(idx)
         annot = self.load_annotations(idx)
-        sample = {'img': img, 'annot': annot}
+        # sample = {'img': img, 'annot': annot}
+        target = {}
+        target['boxes'] = annot[:, :4]
+        target['labels'] = annot[:, 4]
         if self.transform:
-            sample = self.transform(sample)
+            img, target = self.transform(img, target)
 
-        return sample
+        return img, target
 
     def image_path(self, image_index):
         path = os.path.join(self.base_dir, self.id_to_image_id[image_index] + '.jpg')

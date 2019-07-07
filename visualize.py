@@ -9,7 +9,7 @@ import argparse
 
 import sys
 import cv2
-import model
+import retinanet_model
 
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -57,15 +57,15 @@ def main(args=None):
 
     # Create the model
     if parser.depth == 18:
-        retinanet = model.resnet18(num_classes=dataset_val.num_classes(), pretrained=False)
+        retinanet = retinanet_model.resnet18(num_classes=dataset_val.num_classes(), pretrained=False)
     elif parser.depth == 34:
-        retinanet = model.resnet34(num_classes=dataset_val.num_classes(), pretrained=False)
+        retinanet = retinanet_model.resnet34(num_classes=dataset_val.num_classes(), pretrained=False)
     elif parser.depth == 50:
-        retinanet = model.resnet50(num_classes=dataset_val.num_classes(), pretrained=False)
+        retinanet = retinanet_model.resnet50(num_classes=dataset_val.num_classes(), pretrained=False)
     elif parser.depth == 101:
-        retinanet = model.resnet101(num_classes=dataset_val.num_classes(), pretrained=False)
+        retinanet = retinanet_model.resnet101(num_classes=dataset_val.num_classes(), pretrained=False)
     elif parser.depth == 152:
-        retinanet = model.resnet152(num_classes=dataset_val.num_classes(), pretrained=False)
+        retinanet = retinanet_model.resnet152(num_classes=dataset_val.num_classes(), pretrained=False)
     else:
         raise ValueError('Unsupported model depth, must be one of 18, 34, 50, 101, 152')
 

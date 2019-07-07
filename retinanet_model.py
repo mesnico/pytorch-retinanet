@@ -22,6 +22,50 @@ model_urls = {
 }
 
 
+def collater(images, targets):
+    imgs = [s for s in images]
+    annots = [torch.cat([s['boxes'], s['labels']], dim=1) for s in targets]
+    # scales = [s['scale'] for s in data]
+
+    widths = [int(s.shape[0]) for s in imgs]
+    heights = [int(s.shape[1]) for s in imgs]
+    batch_size = len(imgs)
+
+    max_width = np.array(widths).max()
+    max_height = np.array(heights).max()
+
+    padded_imgs = torch.zeros(batch_size, max_width, max_height, 3)
+
+    for i in range(batch_size):
+        img = imgs[i]
+        padded_imgs[i, :int(img.shape[0]), :int(img.shape[1]), :] = img
+
+    max_num_annots = max(annot.shape[0] for annot in annots)
+
+    if max_num_annots > 0:
+
+        annot_padded = torch.ones((len(annots), max_num_annots, 5)) * -1
+
+        if max_num_annots > 0:
+            for idx, annot in enumerate(annots):
+                # print(annot.shape)
+                if annot.shape[0] > 0:
+                    annot_padded[idx, :annot.shape[0], :] = annot
+    else:
+        annot_padded = torch.ones((len(annots), 1, 5)) * -1
+
+    padded_imgs = padded_imgs.permute(0, 3, 1, 2)
+
+    targets = {
+        'boxes': annot_padded[..., :4],
+        'labels': annot_padded[..., 4]
+    }
+
+    # TODO: check if all goes right
+    # return padded_imgs, targets
+    return {'img': padded_imgs, 'annot': annot_padded, 'scale': scales}
+
+
 class PyramidFeatures(nn.Module):
     def __init__(self, C3_size, C4_size, C5_size, feature_size=256):
         super(PyramidFeatures, self).__init__()
@@ -233,10 +277,11 @@ class ResNet(nn.Module):
             if isinstance(layer, nn.BatchNorm2d):
                 layer.eval()
 
-    def forward(self, inputs):
+    def forward(self, inputs, targets):
 
         if self.training:
-            img_batch, annotations = inputs
+            img_batch, annotations, _ = collater(inputs, targets)
+            # img_batch, annotations = inputs
         else:
             img_batch = inputs
 
