@@ -13,16 +13,10 @@ from collections import Counter
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.optim import lr_scheduler
-from torch.autograd import Variable
 from torchvision import datasets, models, transforms
-from torchvision.models.detection import transform as dettransforms
-import torchvision
 from tensorboardX import SummaryWriter
 
-import retinanet_model
-from anchors import Anchors
-import losses
+
 from dataloader import CocoDataset, CSVDataset, collate_fn, Resizer, AspectRatioBasedSampler, Augmenter, UnNormalizer, \
     Normalizer
 from oid_dataset import OidDataset
@@ -50,6 +44,7 @@ def main(args=None):
     parser.add_argument('--depth', help='Resnet depth, must be one of 18, 34, 50, 101, 152', type=int, default=50)
     parser.add_argument('--epochs', help='Number of epochs', type=int, default=100)
     parser.add_argument('--bs', help='Batch size', type=int, default=4)
+    parser.add_argument('--net', help='Network to use', default='fasterrcnn')
 
     parser.add_argument('--log_interval', help='Iterations before outputting stats', type=int, default=50)
     parser.add_argument('--checkpoint_interval', help='Iterations before saving an intermediate checkpoint', type=int,
