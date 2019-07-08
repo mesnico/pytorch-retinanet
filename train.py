@@ -106,7 +106,7 @@ def main(args=None):
     model = create_model(dataset_train.num_classes(), parser)
 
     # Create the experiment folder
-    experiment_fld = 'experiment_{}_resnet{}_{}'.format(parser.dataset, parser.depth,
+    experiment_fld = 'experiment_{}_{}_resnet{}_{}'.format(parser.net, parser.dataset, parser.depth,
                                                         time.strftime("%Y%m%d%H%M%S", time.localtime()))
     experiment_fld = os.path.join('outputs', experiment_fld)
     if not os.path.exists(experiment_fld):
