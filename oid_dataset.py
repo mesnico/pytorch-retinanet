@@ -15,7 +15,6 @@ from PIL import Image
 from torch.utils.data import Dataset
 
 
-# TODO: understand if torchvision 0.3 models expect label 0 to be the background
 def get_labels(metadata_dir, version='v5'):
     if version == 'v4' or version == 'v5' or version == 'challenge2018':
         csv_file = 'class-descriptions-boxable.csv' if version == 'v4' or version == 'v5' else 'challenge-2018-class-descriptions-500.csv'
@@ -24,7 +23,7 @@ def get_labels(metadata_dir, version='v5'):
         id_to_labels = {}
         cls_index = {}
 
-        i = 0
+        i = 1
         with open(boxable_classes_descriptions) as f:
             for row in csv.reader(f):
                 # make sure the csv row is not empty (usually the last one)
@@ -36,6 +35,11 @@ def get_labels(metadata_dir, version='v5'):
                     cls_index[label] = i
 
                     i += 1
+
+        # Add background class
+        id_to_labels[0] = '__background__'
+        cls_index['/m/back'] = 0
+
     else:
         trainable_classes_path = os.path.join(metadata_dir, 'classes-bbox-trainable.txt')
         description_path = os.path.join(metadata_dir, 'class-descriptions.csv')
@@ -162,7 +166,7 @@ def generate_images_annotations_json(main_dir, metadata_dir, subset, cls_index, 
 class OidDataset(Dataset):
     """Oid dataset."""
 
-    def __init__(self, main_dir, subset, version='v5', annotation_cache_dir='.', transform=None):
+    def __init__(self, main_dir, subset, version='v5', annotation_cache_dir='annotations_cache', transform=None):
         if version == 'v4':
             metadata = '2018_04'
         elif version == 'challenge2018':

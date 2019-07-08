@@ -9,6 +9,7 @@ import csv
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, utils
 from torch.utils.data.sampler import Sampler
+import torchvision.transforms.functional as F
 
 from pycocotools.coco import COCO
 
@@ -303,7 +304,7 @@ def collate_fn(batch):
     return tuple(zip(*batch))
 
 
-class Resizer(object):
+'''class Resizer(object):
     """Convert ndarrays in sample to Tensors."""
 
     def __init__(self, min_side=608, max_side=1024):
@@ -361,7 +362,7 @@ class Augmenter(object):
             target['boxes'][:, 0] = cols - x2
             target['boxes'][:, 2] = cols - x_tmp
 
-        return image, target
+        return image, target'''
 
 
 class Normalizer(object):

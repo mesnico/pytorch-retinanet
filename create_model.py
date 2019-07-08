@@ -16,7 +16,7 @@ def create_model(num_classes, parser):
             model = retinanet_model.resnet152(num_classes=dataset_train.num_classes(), pretrained=True)
         else:
             raise ValueError('Unsupported model depth, must be one of 18, 34, 50, 101, 152')
-    elif parser.net == 'fastercnn':
+    elif parser.net == 'fasterrcnn':
         # load a model pre-trained pre-trained on COCO
         if parser.depth == 50:
             model = torchvision.models.detection.fasterrcnn_resnet50_fpn(pretrained=True)
@@ -26,7 +26,7 @@ def create_model(num_classes, parser):
             raise ValueError('Unsupported model depth, must be one of 50, 101')
         # replace the classifier with a new one, that has
         # num_classes which is user-defined
-        num_classes += 1  # add background
+        # num_classes += 1  # add background
         # get number of input features for the classifier
         in_features = model.roi_heads.box_predictor.cls_score.in_features
         # replace the pre-trained head with a new one

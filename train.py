@@ -13,12 +13,12 @@ from collections import Counter
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torchvision import datasets, models, transforms
+from torchvision import datasets, models
 from tensorboardX import SummaryWriter
 
-
-from dataloader import CocoDataset, CSVDataset, collate_fn, Resizer, AspectRatioBasedSampler, Augmenter, UnNormalizer, \
-    Normalizer
+from dataloader import CocoDataset, CSVDataset, collate_fn, AspectRatioBasedSampler, \
+    UnNormalizer, Normalizer
+from transforms import Compose, RandomHorizontalFlip, ToTensor
 from oid_dataset import OidDataset
 from create_model import create_model
 from torch.utils.data import Dataset, DataLoader
@@ -29,6 +29,10 @@ import csv_eval
 # assert torch.__version__.split('.')[1] == '4'
 
 print('CUDA available: {}'.format(torch.cuda.is_available()))
+
+
+def clone_tensor_dict(d):
+    return {k: float(v) for k, v in d.items()}
 
 
 def main(args=None):
@@ -54,16 +58,17 @@ def main(args=None):
 
     # Create the data loaders
     if parser.dataset == 'coco':
-
+        raise NotImplementedError()
         if parser.data_path is None:
             raise ValueError('Must provide --data_path when training on COCO,')
 
         dataset_train = CocoDataset(parser.data_path, set_name='train2017',
-                                    transform=transforms.Compose([Normalizer(), Augmenter(), Resizer()]))
+                                    transform=Compose([Normalizer(), Augmenter(), Resizer()]))
         dataset_val = CocoDataset(parser.data_path, set_name='val2017',
-                                  transform=transforms.Compose([Normalizer(), Resizer()]))
+                                  transform=Compose([Normalizer(), Resizer()]))
 
     elif parser.dataset == 'csv':
+        raise NotImplementedError()
 
         if parser.csv_train is None:
             raise ValueError('Must provide --csv_train when training on COCO,')
@@ -72,25 +77,24 @@ def main(args=None):
             raise ValueError('Must provide --csv_classes when training on COCO,')
 
         dataset_train = CSVDataset(train_file=parser.csv_train, class_list=parser.csv_classes,
-                                   transform=transforms.Compose([Normalizer(), Augmenter(), Resizer()]))
+                                   transform=Compose([Normalizer(), Augmenter(), Resizer()]))
 
         if parser.csv_val is None:
             dataset_val = None
             print('No validation annotations provided.')
         else:
             dataset_val = CSVDataset(train_file=parser.csv_val, class_list=parser.csv_classes,
-                                     transform=transforms.Compose([Normalizer(), Resizer()]))
+                                     transform=Compose([Normalizer(), Resizer()]))
 
     elif parser.dataset == 'openimages':
         if parser.data_path is None:
             raise ValueError('Must provide --data_path when training on OpenImages')
 
-        # TODO: handle transforms using torchvision 0.3 interface
         dataset_train = OidDataset(parser.data_path, subset='train',
-                                   transform=transforms.Compose(
-                                       [Normalizer(), Augmenter(), Resizer(min_side=400, max_side=600)]))
+                                   transform=Compose(
+                                       [ToTensor(), RandomHorizontalFlip(0.5)]))
         dataset_val = OidDataset(parser.data_path, subset='validation',
-                                 transform=transforms.Compose([Normalizer(), Resizer(min_side=400, max_side=600)]))
+                                 transform=Compose([ToTensor()]))
 
     else:
         raise ValueError('Dataset type not understood (must be csv or coco), exiting.')
@@ -139,14 +143,14 @@ def main(args=None):
     loss_hist = collections.deque(maxlen=500)
 
     model.train()
-    model.module.freeze_bn()
+    # model.module.freeze_bn()
 
     print('Num training images: {}'.format(len(dataset_train)))
 
     for epoch_num in tqdm.trange(start_epoch, parser.epochs):
 
         model.train()
-        model.module.freeze_bn()
+        # model.module.freeze_bn()
 
         epoch_loss = []
         losses_mean = {}
@@ -160,7 +164,7 @@ def main(args=None):
 
             images, targets = data
 
-            images = list(image.cuda() for image in images)
+            images = list(image.cuda().float() for image in images)
             targets = [{k: v.cuda() for k, v in t.items()} for t in targets]
             #images, targets = images.cuda(), targets.cuda()
 
@@ -170,46 +174,30 @@ def main(args=None):
             #loss = classification_loss + regression_loss
             loss = sum(loss for loss in loss_dict.values())
             if len(losses_mean) == 0:
-                losses_mean = loss.copy()
+                losses_mean = clone_tensor_dict(loss_dict)
+                losses_mean['total_loss'] = float(loss)
             else:
-                losses_mean = Counter(loss) + Counter(loss_mean)
+                loss_dict['total_loss'] = loss
+                losses_mean = Counter(clone_tensor_dict(loss_dict)) + Counter(losses_mean)
 
             # if bool(loss == 0):
             #	continue
 
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.1)
+            # torch.nn.utils.clip_grad_norm_(model.parameters(), 0.1)
             optimizer.step()
 
             loss_hist.append(float(loss))
             epoch_loss.append(float(loss))
 
-            '''loss_mean += loss
-            classification_loss_mean += classification_loss
-            regression_loss_mean += regression_loss'''
-
             data_progress.set_postfix(dict(loss=float(loss)))
 
             if (iter_num + 1) % parser.log_interval == 0:
-                loss_mean /= parser.log_interval
-                regression_loss_mean /= parser.log_interval
-                classification_loss_mean /= parser.log_interval
-
-                losses_mean['total_loss'] = loss
                 # compute the mean
                 losses_mean = {k: (v / parser.log_interval) for k, v in losses_mean.items()}
 
-                '''info = {
-                    'total_loss': loss_mean,
-                    'regression_loss': regression_loss_mean,
-                    'classification_loss': classification_loss_mean
-                }'''
                 logger.add_scalars("logs/losses", losses_mean,
                                    epoch_num * len(dataloader_train) + iter_num)
-
-                '''loss_mean = 0
-                regression_loss_mean = 0
-                classification_loss_mean = 0'''
                 losses_mean = {}
             # print('Epoch: {} | Iteration: {} | Classification loss: {:1.5f} | Regression loss: {:1.5f} | Running loss: {:1.5f}'.format(epoch_num, iter_num, float(classification_loss), float(regression_loss), np.mean(loss_hist)))
 
@@ -221,6 +209,13 @@ def main(args=None):
                     'scheduler': scheduler.state_dict(),
                     'epoch': epoch_num
                 }, experiment_fld, overwrite=True)
+
+            del loss
+            for l in loss_dict.values():
+                del l
+            if (iter_num + 1) % 5 == 0:
+                # flush cuda memory every tot iterations
+                torch.cuda.empty_cache()
 
         if parser.dataset == 'coco':
 

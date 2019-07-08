@@ -204,7 +204,7 @@ class ClassificationModel(nn.Module):
 
 class ResNet(nn.Module):
 
-    def __init__(self, num_classes, block, layers):
+    def __init__(self, num_classes, block, layers, image_mean=None, image_std=None, min_size=800, max_size=1333):
         self.inplanes = 64
         super(ResNet, self).__init__()
         self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
@@ -254,6 +254,15 @@ class ResNet(nn.Module):
 
         self.freeze_bn()
 
+        if image_mean is None:
+            image_mean = [0.485, 0.456, 0.406]
+        if image_std is None:
+            image_std = [0.229, 0.224, 0.225]
+
+        self.transforms = torchvision.models.detection.transform.GeneralizedRCNNTransform(
+            min_size, max_size, image_mean, image_std
+        )
+
     def _make_layer(self, block, planes, blocks, stride=1):
         downsample = None
         if stride != 1 or self.inplanes != planes * block.expansion:
@@ -278,6 +287,8 @@ class ResNet(nn.Module):
                 layer.eval()
 
     def forward(self, inputs, targets):
+
+        inputs, targets = self.transforms(inputs, targets)
 
         if self.training:
             img_batch, annotations, _ = collater(inputs, targets)
