@@ -32,7 +32,7 @@ print('CUDA available: {}'.format(torch.cuda.is_available()))
 
 
 def clone_tensor_dict(d):
-    return {k: float(v) for k, v in d.items()}
+    return {k: float(v.item()) for k, v in d.items()}
 
 
 def main(args=None):
@@ -43,7 +43,7 @@ def main(args=None):
     parser.add_argument('--csv_train', help='Path to file containing training annotations (see readme)')
     parser.add_argument('--csv_classes', help='Path to file containing class list (see readme)')
     parser.add_argument('--csv_val', help='Path to file containing validation annotations (optional, see readme)')
-    parser.add_argument('--load', help='Checkpoint to load')
+    parser.add_argument('--resume', help='Checkpoint to load')
 
     parser.add_argument('--depth', help='Resnet depth, must be one of 18, 34, 50, 101, 152', type=int, default=50)
     parser.add_argument('--epochs', help='Number of epochs', type=int, default=100)
@@ -126,16 +126,16 @@ def main(args=None):
     model = torch.nn.DataParallel(model).cuda()
     model.training = True
 
-    optimizer = optim.Adam(model.parameters(), lr=1e-5)
+    optimizer = optim.Adam(model.parameters(), lr=1e-4)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, verbose=True)
 
     # Load checkpoint if needed
     start_epoch = 0
-    if parser.load:
-        print('Loading checkpoint {}'.format(parser.load))
-        checkpoint = torch.load(parser.load)
+    if parser.resume:
+        print('Loading checkpoint {}'.format(parser.resume))
+        checkpoint = torch.load(parser.resume)
         start_epoch = checkpoint['epoch']
-        model.load_state_dict(checkpoint['model'])
+        model.module.load_state_dict(checkpoint['model'])
         optimizer.load_state_dict(checkpoint['optimizer'])
         scheduler.load_state_dict(checkpoint['scheduler'])
         print('Checkpoint loaded!')
@@ -175,7 +175,7 @@ def main(args=None):
             loss = sum(loss for loss in loss_dict.values())
             if len(losses_mean) == 0:
                 losses_mean = clone_tensor_dict(loss_dict)
-                losses_mean['total_loss'] = float(loss)
+                losses_mean['total_loss'] = float(loss.item())
             else:
                 loss_dict['total_loss'] = loss
                 losses_mean = Counter(clone_tensor_dict(loss_dict)) + Counter(losses_mean)
@@ -187,10 +187,10 @@ def main(args=None):
             # torch.nn.utils.clip_grad_norm_(model.parameters(), 0.1)
             optimizer.step()
 
-            loss_hist.append(float(loss))
-            epoch_loss.append(float(loss))
+            # loss_hist.append(float(loss))
+            # epoch_loss.append(float(loss))
 
-            data_progress.set_postfix(dict(loss=float(loss)))
+            data_progress.set_postfix(dict(loss=float(loss.item())))
 
             if (iter_num + 1) % parser.log_interval == 0:
                 # compute the mean
@@ -210,10 +210,10 @@ def main(args=None):
                     'epoch': epoch_num
                 }, experiment_fld, overwrite=True)
 
-            del loss
-            for l in loss_dict.values():
-                del l
-            if (iter_num + 1) % 5 == 0:
+            #del loss
+            #for l in loss_dict.values():
+            #    del l
+            if (iter_num + 1) % 1 == 0:
                 # flush cuda memory every tot iterations
                 torch.cuda.empty_cache()
 

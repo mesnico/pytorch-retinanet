@@ -86,12 +86,12 @@ def main(args=None):
 
             # targets = [{k: v.cuda() for k, v in t.items()} for t in targets]
             if use_gpu:
-                images = list(image.cuda().float() for image in images)
+                input_images = list(image.cuda().float() for image in images)
             else:
-                images = list(image.float() for image in images)
+                input_images = list(image.float() for image in images)
             # TODO: adapt retinanet output to the one by torchvision 0.3
             # scores, classification, transformed_anchors = model(data_img.float())
-            outputs = model(images)
+            outputs = model(input_images)
             outputs = [{k: v.cpu() for k, v in t.items()} for t in outputs]
 
             output = outputs[0]  # take the only batch
@@ -110,6 +110,21 @@ def main(args=None):
             img = np.transpose(img, (1, 2, 0))
 
             img = cv2.cvtColor(img.astype(np.uint8), cv2.COLOR_BGR2RGB)
+
+            '''
+            # Visualize ground truth bounding boxes
+            for bbox, label in zip(targets[0]['boxes'], targets[0]['labels']):
+                # bbox = transformed_anchors[idxs[0][j], :]
+                x1 = int(bbox[0])
+                y1 = int(bbox[1])
+                x2 = int(bbox[2])
+                y2 = int(bbox[3])
+                label_name = dataset_val.labels[int(label)]
+                draw_caption(img, (x1, y1, x2, y2), label_name)
+
+                cv2.rectangle(img, (x1, y1), (x2, y2), color=(0, 255, 0), thickness=2)
+                print(label_name)
+            '''
 
             for j in range(idxs[0].shape[0]):
                 bbox = transformed_anchors[idxs[0][j], :]
