@@ -9,7 +9,7 @@ import argparse
 
 import sys
 import cv2
-import retinanet_model
+from models.retinanet import model
 
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -18,7 +18,7 @@ from torchvision import datasets, models
 from transforms import Compose, RandomHorizontalFlip, ToTensor
 from dataloader import CocoDataset, CSVDataset, collate_fn, AspectRatioBasedSampler, \
     UnNormalizer, Normalizer
-from oid_dataset import OidDataset
+from datasets.oid_dataset import OidDataset
 from create_model import create_model
 
 # assert torch.__version__.split('.')[1] == '4'

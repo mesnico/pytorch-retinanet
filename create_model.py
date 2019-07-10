@@ -1,21 +1,12 @@
 import torch
 import torchvision
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
+from models import RetinanetModel
+
 
 def create_model(num_classes, parser):
     if parser.net == 'retinanet':
-        if parser.depth == 18:
-            model = retinanet_model.resnet18(num_classes=dataset_train.num_classes(), pretrained=True)
-        elif parser.depth == 34:
-            model = retinanet_model.resnet34(num_classes=dataset_train.num_classes(), pretrained=True)
-        elif parser.depth == 50:
-            model = retinanet_model.resnet50(num_classes=dataset_train.num_classes(), pretrained=True)
-        elif parser.depth == 101:
-            model = retinanet_model.resnet101(num_classes=dataset_train.num_classes(), pretrained=True)
-        elif parser.depth == 152:
-            model = retinanet_model.resnet152(num_classes=dataset_train.num_classes(), pretrained=True)
-        else:
-            raise ValueError('Unsupported model depth, must be one of 18, 34, 50, 101, 152')
+        model = RetinanetModel(num_classes, parser.depth, pretrained=True)
     elif parser.net == 'fasterrcnn':
         # load a model pre-trained pre-trained on COCO
         if parser.depth == 50:

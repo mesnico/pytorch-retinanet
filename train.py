@@ -16,10 +16,9 @@ import torch.optim as optim
 from torchvision import datasets, models
 from tensorboardX import SummaryWriter
 
-from dataloader import CocoDataset, CSVDataset, collate_fn, AspectRatioBasedSampler, \
-    UnNormalizer, Normalizer
+from datasets import OidDataset    # TODO: only openimages is supported at the moment
+from dataloader import collate_fn, AspectRatioBasedSampler, UnNormalizer, Normalizer
 from transforms import Compose, RandomHorizontalFlip, ToTensor
-from oid_dataset import OidDataset
 from create_model import create_model
 from torch.utils.data import Dataset, DataLoader
 

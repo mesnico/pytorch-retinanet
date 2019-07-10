@@ -393,3 +393,20 @@ def resnet152(num_classes, pretrained=False, **kwargs):
     if pretrained:
         model.load_state_dict(model_zoo.load_url(model_urls['resnet152'], model_dir='.'), strict=False)
     return model
+
+
+def RetinanetModel(num_classes, depth=50, pretrained=False):
+    if depth == 18:
+        model = resnet18(num_classes=num_classes, pretrained=pretrained)
+    elif depth == 34:
+        model = resnet34(num_classes=num_classes, pretrained=pretrained)
+    elif depth == 50:
+        model = resnet50(num_classes=num_classes, pretrained=pretrained)
+    elif depth == 101:
+        model = resnet101(num_classes=num_classes, pretrained=pretrained)
+    elif depth == 152:
+        model = resnet152(num_classes=num_classes, pretrained=pretrained)
+    else:
+        raise ValueError('Unsupported model depth, must be one of 18, 34, 50, 101, 152')
+
+    return model
