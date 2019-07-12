@@ -1,1 +1,1 @@
-from retinanet.model import RetinanetModel
+from models.retinanet.model import RetinanetModel

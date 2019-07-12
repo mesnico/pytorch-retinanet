@@ -11,6 +11,7 @@ import skimage
 import skimage.color
 import skimage.io
 import skimage.transform
+import pandas as pd
 from PIL import Image
 from torch.utils.data import Dataset
 
@@ -21,6 +22,7 @@ def get_labels(metadata_dir, version='v5'):
 
         boxable_classes_descriptions = os.path.join(metadata_dir, csv_file)
         id_to_labels = {}
+        id_to_labels_idx = {}
         cls_index = {}
 
         i = 1
@@ -31,6 +33,7 @@ def get_labels(metadata_dir, version='v5'):
                     label = row[0]
                     description = row[1].replace("\"", "").replace("'", "").replace('`', '')
 
+                    id_to_labels_idx[i] = label
                     id_to_labels[i] = description
                     cls_index[label] = i
 
@@ -38,6 +41,7 @@ def get_labels(metadata_dir, version='v5'):
 
         # Add background class
         id_to_labels[0] = '__background__'
+        id_to_labels_idx[0] = '/m/back'
         cls_index['/m/back'] = 0
 
     else:
@@ -57,7 +61,7 @@ def get_labels(metadata_dir, version='v5'):
         id_to_labels = dict([(i, description_table[c]) for i, c in enumerate(trainable_classes)])
         cls_index = dict([(c, i) for i, c in enumerate(trainable_classes)])
 
-    return id_to_labels, cls_index
+    return id_to_labels, id_to_labels_idx, cls_index
 
 
 def generate_images_annotations_json(main_dir, metadata_dir, subset, cls_index, version='v5'):
@@ -188,7 +192,7 @@ class OidDataset(Dataset):
         metadata_dir = os.path.join(main_dir, metadata)
         annotation_cache_pkl = os.path.join(annotation_cache_dir, subset + '.pkl')
 
-        self.id_to_labels, cls_index = get_labels(metadata_dir, version=version)
+        self.id_to_labels, self.id_to_labels_idx, cls_index = get_labels(metadata_dir, version=version)
 
         if os.path.exists(annotation_cache_pkl):
             print('Loading cached annotations: {}'.format(annotation_cache_pkl))
@@ -272,3 +276,71 @@ class OidDataset(Dataset):
 
     def num_classes(self):
         return len(self.id_to_labels)
+
+    def evaluate(self, all_detections, output_dir, file_identifier=""):
+        """
+        Evaluates detections and put the results in a file into outdir
+
+        :param all_detections: list[image_index, list[boxes], list[labels]]
+        :param output_dir: file where detection results will be stored
+        :param file_identifier: optionally, a identifier for the file
+        :return: optionally, a dictionary of metrics
+
+        """
+
+        # MODE 1 (python evaluation)
+        det_dict = {
+            'ImageID': [],
+            'XMin': [],
+            'XMax': [],
+            'YMin': [],
+            'YMax': [],
+            'Score': [],
+            'LabelName': []
+        }
+
+        for image_index, boxes, labels, scores in all_detections:
+            img_annotations = self.annotations[self.id_to_image_id[image_index]]
+            for box, label, score in zip(boxes, labels, scores):
+                # add this detection to the dict
+                det_dict['ImageID'].append(self.id_to_image_id[image_index])
+                det_dict['XMin'].append(box[0] / img_annotations['w'])
+                det_dict['YMin'].append(box[1] / img_annotations['h'])
+                det_dict['XMax'].append(box[2] / img_annotations['w'])
+                det_dict['YMax'].append(box[3] / img_annotations['h'])
+                det_dict['Score'].append(score)
+                det_dict['LabelName'].append(self.id_to_labels_idx[label])
+
+        # dump dict on a csv file
+        df = pd.DataFrame(det_dict)
+        out_filename = os.path.join(output_dir, 'detections_{}.csv'.format(file_identifier))
+        df.to_csv(out_filename, index=False)
+
+        # MODE 2 (challenge)
+
+        predictions = []
+
+        for image_index, boxes, labels, scores in all_detections:
+            detections = []
+            img_annotations = self.annotations[self.id_to_image_id[image_index]]
+            for box, label, score in zip(boxes, labels, scores):
+                # add this detection to the dict
+                det_str = "{} {} {} {} {} {}".format(
+                    self.id_to_labels_idx[label],
+                    score,
+                    box[0] / img_annotations['w'],
+                    box[1] / img_annotations['h'],
+                    box[2] / img_annotations['w'],
+                    box[3] / img_annotations['h']
+                )
+                detections.append(det_str)
+
+            predictions.append(
+                {'ImageID': self.id_to_image_id[image_index],
+                 'PredictionString': " ".join(detections)}
+            )
+
+            # dump dict on a csv file
+        df = pd.DataFrame(predictions)
+        out_filename = os.path.join(output_dir, 'detections_{}_competition.csv'.format(file_identifier))
+        df.to_csv(out_filename, index=False)

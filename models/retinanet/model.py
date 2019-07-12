@@ -3,10 +3,10 @@ import torch
 import math
 import time
 import torch.utils.model_zoo as model_zoo
-from utils import BasicBlock, Bottleneck, BBoxTransform, ClipBoxes
-from anchors import Anchors
+from .utils import BasicBlock, Bottleneck, BBoxTransform, ClipBoxes
+from .anchors import Anchors
 from torchvision.ops import nms
-import losses
+from .losses import *
 
 '''def nms(dets, thresh):
     "Dispatch to either CPU or GPU NMS implementations.\
