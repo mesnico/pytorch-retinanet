@@ -25,6 +25,8 @@ from create_model import create_model
 # assert torch.__version__.split('.')[1] == '4'
 
 use_gpu = True
+det_thres = 0.4
+
 if not use_gpu:
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
 print('CUDA available: {}'.format(torch.cuda.is_available()))
@@ -99,7 +101,7 @@ def main(args=None):
             # from here, interface to the code already written in the original repo
 
             # TODO: 0.5 should be a parameter in a configuration file.. that hopefully should be created and handled..
-            det_idxs = np.where(scores > 0.5)
+            det_idxs = np.where(scores > det_thres)
 
             bboxes = transformed_anchors[det_idxs[0][det_idxs], :].cpu().numpy()
             labels = classification[det_idxs[0][det_idxs]].cpu().numpy()
@@ -108,12 +110,12 @@ def main(args=None):
             packed_detections = [idx, bboxes, labels, scores]
             all_detections.append(packed_detections)
 
-            # if idx == 20:
+            #if idx == 3:
             #    break
 
     print('Evaluating...')
     # TODO: add identification parameter to evaluate so that detections from different checkpoints are not overwritten
-    dataset.evaluate(all_detections, det_output_path, file_identifier=parser.set)
+    dataset.evaluate(all_detections, det_output_path, file_identifier='{}_IoU{}'.format(parser.set, det_thres))
     print('DONE!')
 
 

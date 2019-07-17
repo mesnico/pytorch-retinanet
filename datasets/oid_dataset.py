@@ -88,82 +88,98 @@ def generate_images_annotations_json(main_dir, metadata_dir, subset, cls_index, 
                   'IsOccluded', 'IsTruncated', 'IsGroupOf', 'IsDepiction', 'IsInside']
 
     id_annotations = dict()
-    with open(annotations_path, 'r') as csv_file:
-        reader = csv.DictReader(csv_file, fieldnames=fieldnames)
-        next(reader)
+    if os.path.exists(annotations_path):
+        with open(annotations_path, 'r') as csv_file:
+            reader = csv.DictReader(csv_file, fieldnames=fieldnames)
+            next(reader)
 
-        images_sizes = {}
-        for line, row in enumerate(tqdm.tqdm(reader)):
-            frame = row['ImageID']
+            images_sizes = {}
+            for line, row in enumerate(tqdm.tqdm(reader)):
+                frame = row['ImageID']
 
-            if version == 'challenge2018':
-                if subset == 'train':
-                    if frame in validation_image_ids:
-                        continue
-                elif subset == 'validation':
-                    if frame not in validation_image_ids:
-                        continue
-                else:
-                    raise NotImplementedError('This generator handles only the train and validation subsets')
+                if version == 'challenge2018':
+                    if subset == 'train':
+                        if frame in validation_image_ids:
+                            continue
+                    elif subset == 'validation':
+                        if frame not in validation_image_ids:
+                            continue
+                    else:
+                        raise NotImplementedError('This generator handles only the train and validation subsets')
 
-            class_name = row['LabelName']
+                class_name = row['LabelName']
 
-            if class_name not in cls_index:
-                continue
-
-            cls_id = cls_index[class_name]
-
-            if version == 'challenge2018':
-                # We recommend participants to use the provided subset of the training set as a validation set.
-                # This is preferable over using the V4 val/test sets, as the training set is more densely annotated.
-                img_path = os.path.join(main_dir, 'train', frame + '.jpg')
-            else:
-                img_path = os.path.join(main_dir, subset, frame + '.jpg')
-
-            if frame in images_sizes:
-                width, height = images_sizes[frame]
-            else:
-                try:
-                    with Image.open(img_path) as img:
-                        width, height = img.width, img.height
-                        images_sizes[frame] = (width, height)
-                except Exception as ex:
-                    if version == 'challenge2018':
-                        raise ex
+                if class_name not in cls_index:
                     continue
 
-            x1 = float(row['XMin'])
-            x2 = float(row['XMax'])
-            y1 = float(row['YMin'])
-            y2 = float(row['YMax'])
+                cls_id = cls_index[class_name]
 
-            x1_int = int(round(x1 * width))
-            x2_int = int(round(x2 * width))
-            y1_int = int(round(y1 * height))
-            y2_int = int(round(y2 * height))
+                if version == 'challenge2018':
+                    # We recommend participants to use the provided subset of the training set as a validation set.
+                    # This is preferable over using the V4 val/test sets, as the training set is more densely annotated.
+                    img_path = os.path.join(main_dir, 'train', frame + '.jpg')
+                else:
+                    img_path = os.path.join(main_dir, subset, frame + '.jpg')
 
-            # Check that the bounding box is valid.
-            if x2 <= x1:
-                raise ValueError('line {}: x2 ({}) must be higher than x1 ({})'.format(line, x2, x1))
-            if y2 <= y1:
-                raise ValueError('line {}: y2 ({}) must be higher than y1 ({})'.format(line, y2, y1))
+                if frame in images_sizes:
+                    width, height = images_sizes[frame]
+                else:
+                    try:
+                        with Image.open(img_path) as img:
+                            width, height = img.width, img.height
+                            images_sizes[frame] = (width, height)
+                    except Exception as ex:
+                        if version == 'challenge2018':
+                            raise ex
+                        continue
 
-            if y2_int == y1_int:
-                warnings.warn('filtering line {}: rounding y2 ({}) and y1 ({}) makes them equal'.format(line, y2, y1))
-                continue
+                x1 = float(row['XMin'])
+                x2 = float(row['XMax'])
+                y1 = float(row['YMin'])
+                y2 = float(row['YMax'])
 
-            if x2_int == x1_int:
-                warnings.warn('filtering line {}: rounding x2 ({}) and x1 ({}) makes them equal'.format(line, x2, x1))
-                continue
+                x1_int = int(round(x1 * width))
+                x2_int = int(round(x2 * width))
+                y1_int = int(round(y1 * height))
+                y2_int = int(round(y2 * height))
 
-            img_id = row['ImageID']
-            annotation = {'cls_id': cls_id, 'x1': x1, 'x2': x2, 'y1': y1, 'y2': y2}
+                # Check that the bounding box is valid.
+                if x2 <= x1:
+                    raise ValueError('line {}: x2 ({}) must be higher than x1 ({})'.format(line, x2, x1))
+                if y2 <= y1:
+                    raise ValueError('line {}: y2 ({}) must be higher than y1 ({})'.format(line, y2, y1))
 
-            if img_id in id_annotations:
-                annotations = id_annotations[img_id]
-                annotations['boxes'].append(annotation)
-            else:
-                id_annotations[img_id] = {'w': width, 'h': height, 'boxes': [annotation]}
+                if y2_int == y1_int:
+                    warnings.warn('filtering line {}: rounding y2 ({}) and y1 ({}) makes them equal'.format(line, y2, y1))
+                    continue
+
+                if x2_int == x1_int:
+                    warnings.warn('filtering line {}: rounding x2 ({}) and x1 ({}) makes them equal'.format(line, x2, x1))
+                    continue
+
+                img_id = row['ImageID']
+                annotation = {'cls_id': cls_id, 'x1': x1, 'x2': x2, 'y1': y1, 'y2': y2}
+
+                if img_id in id_annotations:
+                    annotations = id_annotations[img_id]
+                    annotations['boxes'].append(annotation)
+                else:
+                    id_annotations[img_id] = {'w': width, 'h': height, 'boxes': [annotation]}
+    else:
+        # simply cache image informations from the image folder.
+        # This is needed for test detections for challenge submission
+        print('WARNING: annotation file not present! Supposing test dataset without annotations')
+        images_fld = os.path.join(main_dir, subset)
+        for image in tqdm.tqdm(os.listdir(images_fld)):
+            img_id = os.path.splitext(image)[0]
+            img_path = os.path.join(images_fld, image)
+            with Image.open(img_path) as img:
+                width, height = img.width, img.height
+
+            # dummy annotation
+            annotation = {'cls_id': 0, 'x1': 0, 'x2': 0, 'y1': 0, 'y2': 0}
+            id_annotations[img_id] = {'w': width, 'h': height, 'boxes': [annotation]}
+
     return id_annotations
 
 
@@ -251,6 +267,7 @@ class OidDataset(Dataset):
         image_annotations = self.annotations[self.id_to_image_id[image_index]]
 
         labels = image_annotations['boxes']
+
         height, width = image_annotations['h'], image_annotations['w']
 
         boxes = np.zeros((len(labels), 5))
@@ -304,17 +321,17 @@ class OidDataset(Dataset):
             for box, label, score in zip(boxes, labels, scores):
                 # add this detection to the dict
                 det_dict['ImageID'].append(self.id_to_image_id[image_index])
-                det_dict['XMin'].append(box[0] / img_annotations['w'])
-                det_dict['YMin'].append(box[1] / img_annotations['h'])
-                det_dict['XMax'].append(box[2] / img_annotations['w'])
-                det_dict['YMax'].append(box[3] / img_annotations['h'])
+                det_dict['XMin'].append(np.clip(box[0] / img_annotations['w'], 0, 1))
+                det_dict['YMin'].append(np.clip(box[1] / img_annotations['h'], 0, 1))
+                det_dict['XMax'].append(np.clip(box[2] / img_annotations['w'], 0, 1))
+                det_dict['YMax'].append(np.clip(box[3] / img_annotations['h'], 0, 1))
                 det_dict['Score'].append(score)
                 det_dict['LabelName'].append(self.id_to_labels_idx[label])
 
         # dump dict on a csv file
         df = pd.DataFrame(det_dict)
         out_filename = os.path.join(output_dir, 'detections_{}.csv'.format(file_identifier))
-        df.to_csv(out_filename, index=False)
+        df.to_csv(out_filename, index=False, float_format='%.6f')
 
         # MODE 2 (challenge)
 
@@ -325,13 +342,13 @@ class OidDataset(Dataset):
             img_annotations = self.annotations[self.id_to_image_id[image_index]]
             for box, label, score in zip(boxes, labels, scores):
                 # add this detection to the dict
-                det_str = "{} {} {} {} {} {}".format(
+                det_str = "{} {:f} {:f} {:f} {:f} {:f}".format(
                     self.id_to_labels_idx[label],
                     score,
-                    box[0] / img_annotations['w'],
-                    box[1] / img_annotations['h'],
-                    box[2] / img_annotations['w'],
-                    box[3] / img_annotations['h']
+                    np.clip(box[0] / img_annotations['w'], 0, 1),
+                    np.clip(box[1] / img_annotations['h'], 0, 1),
+                    np.clip(box[2] / img_annotations['w'], 0, 1),
+                    np.clip(box[3] / img_annotations['h'], 0, 1)
                 )
                 detections.append(det_str)
 
@@ -342,5 +359,5 @@ class OidDataset(Dataset):
 
             # dump dict on a csv file
         df = pd.DataFrame(predictions)
-        out_filename = os.path.join(output_dir, 'detections_{}_competition.csv'.format(file_identifier))
-        df.to_csv(out_filename, index=False)
+        out_filename = os.path.join(output_dir, 'detections_{}_competitionformat.csv'.format(file_identifier))
+        df.to_csv(out_filename, index=False, float_format='%.6f')
