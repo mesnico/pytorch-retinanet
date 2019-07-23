@@ -286,10 +286,24 @@ class OidDataset(Dataset):
 
         return boxes
 
+    # used for aspect ratio sampler
     def image_aspect_ratio(self, image_index):
         img_annotations = self.annotations[self.id_to_image_id[image_index]]
         height, width = img_annotations['h'], img_annotations['w']
         return float(width) / float(height)
+
+    # used for balanced sampler
+    def build_class_frequencies(self):
+        freq = {}
+        idxs = list(range(len(self)))
+        for idx in tqdm.tqdm(idxs):
+            ann = self.annotations[self.id_to_image_id[idx]]
+            classes = [v['cls_id'] for v in ann['boxes']]
+            for c in classes:
+                if c not in freq:
+                    freq[c] = set()
+                freq[c].add(idx)
+        return freq
 
     def num_classes(self):
         return len(self.id_to_labels)

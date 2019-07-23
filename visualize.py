@@ -16,8 +16,7 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import datasets, models
 
 from transforms import Compose, RandomHorizontalFlip, ToTensor
-from dataloader import CocoDataset, CSVDataset, collate_fn, AspectRatioBasedSampler, \
-    UnNormalizer, Normalizer
+from dataloader import collate_fn, AspectRatioBasedSampler, UnNormalizer, Normalizer
 from datasets.oid_dataset import OidDataset
 from create_model import create_model
 

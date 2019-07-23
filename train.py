@@ -17,8 +17,8 @@ from torchvision import datasets, models
 from tensorboardX import SummaryWriter
 
 from datasets import OidDataset, DummyDataset    # TODO: only openimages is supported at the moment
-from dataloader import collate_fn, AspectRatioBasedSampler, UnNormalizer, Normalizer
-from transforms import Compose, RandomHorizontalFlip, Resizer, ToTensor
+from dataloader import collate_fn, AspectRatioBasedSampler, BalancedAspectRatioBasedSampler, UnNormalizer, Normalizer
+from transforms import Compose, RandomHorizontalFlip, Resizer, ToTensor, Augment
 from create_model import create_model
 from torch.utils.data import Dataset, DataLoader
 
@@ -93,7 +93,7 @@ def main(args=None):
 
         dataset_train = OidDataset(parser.data_path, subset='train',
                                    transform=Compose(
-                                       [ToTensor(), Resizer(), RandomHorizontalFlip(0.5)]))
+                                       [ToTensor(), Augment(), Resizer()]))
         dataset_val = OidDataset(parser.data_path, subset='validation',
                                  transform=Compose([ToTensor(), Resizer()]))
 
@@ -105,7 +105,7 @@ def main(args=None):
     else:
         raise ValueError('Dataset type not understood (must be csv or coco), exiting.')
 
-    sampler = AspectRatioBasedSampler(dataset_train, batch_size=parser.bs, drop_last=False)
+    sampler = BalancedAspectRatioBasedSampler(dataset_train, batch_size=parser.bs, drop_last=False)
     dataloader_train = DataLoader(dataset_train, num_workers=12, collate_fn=collate_fn, batch_sampler=sampler)
 
     # if dataset_val is not None:
@@ -236,13 +236,7 @@ def main(args=None):
                 }, experiment_fld, overwrite=True)
 
             del loss
-            '''for l in loss_dict.values():
-                del l
-            for img in images:
-                del img
-            for tgt in targets:
-                for t in tgt.values():
-                    del t'''
+
             if (iter_num + 1) % 50 == 0:
                 # flush cuda memory every tot iterations
                 torch.cuda.empty_cache()

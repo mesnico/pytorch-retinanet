@@ -79,3 +79,44 @@ class AspectRatioBasedSampler(Sampler):
         # divide into groups, one group = one batch
         return [[order[x % len(order)] for x in range(i, i + self.batch_size)] for i in
                 range(0, len(order), self.batch_size)]
+
+
+class BalancedAspectRatioBasedSampler(Sampler):
+
+    def __init__(self, data_source, batch_size, drop_last):
+        self.data_source = data_source
+        self.batch_size = batch_size
+        self.drop_last = drop_last
+        self.class_freq_dict = self.data_source.build_class_frequencies()
+        self.groups = self.group_images()
+
+    def __iter__(self):
+        random.shuffle(self.groups)
+        for group in self.groups:
+            yield group
+
+    def __len__(self):
+        if self.drop_last:
+            return len(self.data_source) // self.batch_size
+        else:
+            return (len(self.data_source) + self.batch_size - 1) // self.batch_size
+
+    def group_images(self):
+        order = []
+        images_per_class = len(self.data_source) // self.data_source.num_classes()
+        for cl, img_set in self.class_freq_dict.items():
+            if len(img_set) >= images_per_class:
+                # pick random images from this class
+                order.extend(random.sample(img_set, images_per_class))
+            else:
+                # repeat indexes
+                num_of_repetitions = images_per_class // len(img_set) + 1
+                order.extend(list(img_set) * num_of_repetitions)
+
+        # determine the order of the images
+        # order = list(range(len(self.data_source)))
+        order.sort(key=lambda x: self.data_source.image_aspect_ratio(x))
+
+        # divide into groups, one group = one batch
+        return [[order[x % len(order)] for x in range(i, i + self.batch_size)] for i in
+                range(0, len(order), self.batch_size)]

@@ -1,8 +1,11 @@
 import random
 import torch
+import numpy as np
 
 from torchvision.transforms import functional as F
 from torchvision.models.detection.transform import resize_boxes
+import imgaug.augmenters as iaa
+from imgaug.augmentables.bbs import BoundingBox, BoundingBoxesOnImage
 
 
 class RandomHorizontalFlip(object):
@@ -77,3 +80,43 @@ class Resizer(object):
         target["boxes"] = bbox
 
         return image, target
+
+
+class Augment(object):
+    def __init__(self):
+        self.seq = iaa.Sequential([
+            iaa.Fliplr(0.5),  # horizontal flips
+            # Small gaussian blur with random sigma between 0 and 0.5.
+            # But we only blur about 50% of all images.
+            iaa.Sometimes(0.5,
+                          iaa.GaussianBlur(sigma=(0, 0.5))
+                          ),
+            # Strengthen or weaken the contrast in each image.
+            iaa.ContrastNormalization((0.75, 1.5)),
+            # Add gaussian noise.
+            # For 50% of all images, we sample the noise once per pixel.
+            # For the other 50% of all images, we sample the noise per pixel AND
+            # channel. This can change the color (not only brightness) of the
+            # pixels.
+            iaa.Sometimes(0.5,
+                          iaa.AdditiveGaussianNoise(loc=0, scale=(0.0, 0.15), per_channel=0.5)
+                          ),
+            # Make some images brighter and some darker.
+            # In 20% of all cases, we sample the multiplier once per channel,
+            # which can end up changing the color of the images.
+            iaa.Multiply((0.8, 1.2), per_channel=0.2),
+            iaa.Affine(
+                rotate=(-20, 20)
+            )
+        ], random_order=True)  # apply augmenters in random order
+
+    def __call__(self, image, target):
+        np_image = image.permute(1, 2, 0).numpy()
+        bboxes = [BoundingBox(x1=x1, y1=y1, x2=x2, y2=y2) for x1, y1, x2, y2 in target['boxes'][:, :4]]
+        image_aug, boxes_aug = self.seq(image=np_image, bounding_boxes=bboxes)
+
+        image_aug = torch.from_numpy(np.ascontiguousarray(image_aug)).permute(2, 0, 1)
+        boxes_aug = [[b.x1, b.y1, b.x2, b.y2] for b in boxes_aug]
+        target['boxes'][:, :4] = torch.tensor(boxes_aug)
+
+        return image_aug, target
