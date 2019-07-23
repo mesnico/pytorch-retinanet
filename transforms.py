@@ -2,6 +2,7 @@ import random
 import torch
 
 from torchvision.transforms import functional as F
+from torchvision.models.detection.transform import resize_boxes
 
 
 class RandomHorizontalFlip(object):
@@ -41,4 +42,38 @@ class ToTensor(object):
             'boxes': torch.as_tensor(target['boxes'], dtype=torch.float32),
             'labels': torch.as_tensor(target['labels'], dtype=torch.int64)
         }
+        return image, target
+
+
+class Resizer(object):
+    """Convert ndarrays in sample to Tensors.
+
+    NOTE: torchvision 0.3 already comes with a resizer, but it is embedded into the model. This obliges the model to fully
+    load every image into GPU. Instead, this transformer pre-processes the image resizing it before loading onto
+    the GPU.
+    """
+
+    def __init__(self, min_side=800, max_side=1333):
+        self.min_side = min_side
+        self.max_side = max_side
+
+    def __call__(self, image, target):
+        h, w = image.shape[-2:]
+        min_size = float(min(image.shape[-2:]))
+        max_size = float(max(image.shape[-2:]))
+
+        size = self.min_side
+        scale_factor = size / min_size
+        if max_size * scale_factor > self.max_side:
+            scale_factor = self.max_side / max_size
+        image = torch.nn.functional.interpolate(
+            image[None], scale_factor=scale_factor, mode='bilinear', align_corners=False)[0]
+
+        if target is None:
+            return image, target
+
+        bbox = target["boxes"]
+        bbox = resize_boxes(bbox, (h, w), image.shape[-2:])
+        target["boxes"] = bbox
+
         return image, target

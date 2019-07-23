@@ -16,14 +16,16 @@ import torch.optim as optim
 from torchvision import datasets, models
 from tensorboardX import SummaryWriter
 
-from datasets import OidDataset    # TODO: only openimages is supported at the moment
+from datasets import OidDataset, DummyDataset    # TODO: only openimages is supported at the moment
 from dataloader import collate_fn, AspectRatioBasedSampler, UnNormalizer, Normalizer
-from transforms import Compose, RandomHorizontalFlip, ToTensor
+from transforms import Compose, RandomHorizontalFlip, Resizer, ToTensor
 from create_model import create_model
 from torch.utils.data import Dataset, DataLoader
 
 import coco_eval
 import csv_eval
+
+import gc
 
 # assert torch.__version__.split('.')[1] == '4'
 
@@ -91,9 +93,14 @@ def main(args=None):
 
         dataset_train = OidDataset(parser.data_path, subset='train',
                                    transform=Compose(
-                                       [ToTensor(), RandomHorizontalFlip(0.5)]))
+                                       [ToTensor(), Resizer(), RandomHorizontalFlip(0.5)]))
         dataset_val = OidDataset(parser.data_path, subset='validation',
-                                 transform=Compose([ToTensor()]))
+                                 transform=Compose([ToTensor(), Resizer()]))
+
+    elif parser.dataset == 'dummy':
+        # dummy dataset used only for debugging purposes
+        dataset_train = DummyDataset(transform=Compose([ToTensor(), Resizer()]))
+        # dataset_val = DummyDataset(transform=Compose([ToTensor(), Resizer()]))
 
     else:
         raise ValueError('Dataset type not understood (must be csv or coco), exiting.')
@@ -101,9 +108,9 @@ def main(args=None):
     sampler = AspectRatioBasedSampler(dataset_train, batch_size=parser.bs, drop_last=False)
     dataloader_train = DataLoader(dataset_train, num_workers=12, collate_fn=collate_fn, batch_sampler=sampler)
 
-    if dataset_val is not None:
-        sampler_val = AspectRatioBasedSampler(dataset_val, batch_size=1, drop_last=False)
-        dataloader_val = DataLoader(dataset_val, num_workers=12, collate_fn=collate_fn, batch_sampler=sampler_val)
+    # if dataset_val is not None:
+    #    sampler_val = AspectRatioBasedSampler(dataset_val, batch_size=1, drop_last=False)
+    #    dataloader_val = DataLoader(dataset_val, num_workers=12, collate_fn=collate_fn, batch_sampler=sampler_val)
 
     # Create the model
     model = create_model(dataset_train.num_classes(), parser)
@@ -158,7 +165,26 @@ def main(args=None):
         classification_loss_mean = 0'''
 
         data_progress = tqdm.tqdm(dataloader_train)
+        old_tensors_set = {}
         for iter_num, data in enumerate(data_progress):
+            if (iter_num + 1) % 5000000 == 0:
+                n_tensors = 0
+                tensors_set = []
+                for obj in gc.get_objects():
+                    try:
+                        if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)) and obj.is_cuda:
+                            #print(type(obj), obj.size())
+                            n_tensors+=1
+                            #tensors_set.append(obj)
+                    except:
+                        pass
+                #tensors_set = set(tensors_set)
+                #diff = tensors_set.difference(old_tensors_set)
+                #for el in diff:
+                #    print(type(el), el.size())
+                #old_tensors_set = tensors_set
+                print('Number of active tensors: {}; increment: {}'.format(n_tensors, None))
+
             optimizer.zero_grad()
 
             images, targets = data
@@ -209,10 +235,15 @@ def main(args=None):
                     'epoch': epoch_num
                 }, experiment_fld, overwrite=True)
 
-            #del loss
-            #for l in loss_dict.values():
-            #    del l
-            if (iter_num + 1) % 1 == 0:
+            del loss
+            '''for l in loss_dict.values():
+                del l
+            for img in images:
+                del img
+            for tgt in targets:
+                for t in tgt.values():
+                    del t'''
+            if (iter_num + 1) % 50 == 0:
                 # flush cuda memory every tot iterations
                 torch.cuda.empty_cache()
 
