@@ -17,7 +17,7 @@ from torchvision import datasets, models
 from tensorboardX import SummaryWriter
 
 from datasets import OidDataset, DummyDataset    # TODO: only openimages is supported at the moment
-from dataloader import collate_fn, AspectRatioBasedSampler, BalancedAspectRatioBasedSampler, UnNormalizer, Normalizer
+from dataloader import collate_fn, AspectRatioBasedSampler, BalancedSampler, UnNormalizer, Normalizer
 from transforms import Compose, RandomHorizontalFlip, Resizer, ToTensor, Augment
 from create_model import create_model
 from torch.utils.data import Dataset, DataLoader
@@ -48,14 +48,19 @@ def main(args=None):
 
     parser.add_argument('--depth', help='Resnet depth, must be one of 18, 34, 50, 101, 152', type=int, default=50)
     parser.add_argument('--epochs', help='Number of epochs', type=int, default=100)
-    parser.add_argument('--bs', help='Batch size', type=int, default=4)
+    parser.add_argument('--bs', help='Batch size', type=int, default=64)
     parser.add_argument('--net', help='Network to use', default='fasterrcnn')
 
-    parser.add_argument('--log_interval', help='Iterations before outputting stats', type=int, default=50)
+    parser.add_argument('--log_interval', help='Iterations before outputting stats', type=int, default=1)
     parser.add_argument('--checkpoint_interval', help='Iterations before saving an intermediate checkpoint', type=int,
-                        default=5000)
+                        default=80)
+    parser.add_argument('--iterations', type=int, help='Iterations for every batch', default=32)
 
     parser = parser.parse_args(args)
+
+    # This becomes the minibatch size
+    parser.bs = parser.bs // parser.iterations
+    print('With {} iterations the effective batch size is {}'.format(parser.iterations, parser.bs))
 
     # Create the data loaders
     if parser.dataset == 'coco':
@@ -93,9 +98,9 @@ def main(args=None):
 
         dataset_train = OidDataset(parser.data_path, subset='train',
                                    transform=Compose(
-                                       [ToTensor(), Augment(), Resizer()]))
+                                       [ToTensor(), Augment(), Resizer(min_side=600, max_side=1000)]))
         dataset_val = OidDataset(parser.data_path, subset='validation',
-                                 transform=Compose([ToTensor(), Resizer()]))
+                                 transform=Compose([ToTensor(), Resizer(min_side=600, max_side=1000)]))
 
     elif parser.dataset == 'dummy':
         # dummy dataset used only for debugging purposes
@@ -105,8 +110,8 @@ def main(args=None):
     else:
         raise ValueError('Dataset type not understood (must be csv or coco), exiting.')
 
-    sampler = BalancedAspectRatioBasedSampler(dataset_train, batch_size=parser.bs, drop_last=False)
-    dataloader_train = DataLoader(dataset_train, num_workers=12, collate_fn=collate_fn, batch_sampler=sampler)
+    sampler = BalancedSampler(dataset_train, batch_size=parser.bs, drop_last=False)
+    dataloader_train = DataLoader(dataset_train, num_workers=8, collate_fn=collate_fn, batch_sampler=sampler)
 
     # if dataset_val is not None:
     #    sampler_val = AspectRatioBasedSampler(dataset_val, batch_size=1, drop_last=False)
@@ -159,33 +164,13 @@ def main(args=None):
         # model.module.freeze_bn()
 
         epoch_loss = []
-        losses_mean = {}
-        '''loss_mean = 0
-        regression_loss_mean = 0
-        classification_loss_mean = 0'''
+        log_losses_mean = {}
+        running_loss_sum = 0
 
         data_progress = tqdm.tqdm(dataloader_train)
         old_tensors_set = {}
-        for iter_num, data in enumerate(data_progress):
-            if (iter_num + 1) % 5000000 == 0:
-                n_tensors = 0
-                tensors_set = []
-                for obj in gc.get_objects():
-                    try:
-                        if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)) and obj.is_cuda:
-                            #print(type(obj), obj.size())
-                            n_tensors+=1
-                            #tensors_set.append(obj)
-                    except:
-                        pass
-                #tensors_set = set(tensors_set)
-                #diff = tensors_set.difference(old_tensors_set)
-                #for el in diff:
-                #    print(type(el), el.size())
-                #old_tensors_set = tensors_set
-                print('Number of active tensors: {}; increment: {}'.format(n_tensors, None))
-
-            optimizer.zero_grad()
+        optimizer.zero_grad()
+        for minibatch_idx, data in enumerate(data_progress):
 
             images, targets = data
 
@@ -198,35 +183,42 @@ def main(args=None):
             #regression_loss = regression_loss.mean()
             #loss = classification_loss + regression_loss
             loss = sum(loss for loss in loss_dict.values())
-            if len(losses_mean) == 0:
-                losses_mean = clone_tensor_dict(loss_dict)
-                losses_mean['total_loss'] = float(loss.item())
-            else:
-                loss_dict['total_loss'] = loss
-                losses_mean = Counter(clone_tensor_dict(loss_dict)) + Counter(losses_mean)
-
-            # if bool(loss == 0):
-            #	continue
+            monitor_loss = loss
+            loss /= parser.iterations
+            running_loss_sum += float(loss.item())
 
             loss.backward()
+
+            if len(log_losses_mean) == 0:
+                log_losses_mean = clone_tensor_dict(loss_dict)
+                log_losses_mean['total_loss'] = float(monitor_loss.item())
+            else:
+                loss_dict['total_loss'] = monitor_loss
+                log_losses_mean = Counter(clone_tensor_dict(loss_dict)) + Counter(log_losses_mean)
+
+            if (minibatch_idx + 1) % parser.iterations == 0:
+                data_progress.set_postfix(dict(it=minibatch_idx // parser.iterations, loss=running_loss_sum))
+
+                # all minibatches have been accumulated. Zero the grad
+                optimizer.step()
+                optimizer.zero_grad()
+                running_loss_sum = 0
+
             # torch.nn.utils.clip_grad_norm_(model.parameters(), 0.1)
-            optimizer.step()
 
             # loss_hist.append(float(loss))
             # epoch_loss.append(float(loss))
 
-            data_progress.set_postfix(dict(loss=float(loss.item())))
-
-            if (iter_num + 1) % parser.log_interval == 0:
+            if (minibatch_idx + 1) % (parser.log_interval * parser.iterations) == 0:
                 # compute the mean
-                losses_mean = {k: (v / parser.log_interval) for k, v in losses_mean.items()}
+                log_losses_mean = {k: (v / (parser.log_interval * parser.iterations)) for k, v in log_losses_mean.items()}
 
-                logger.add_scalars("logs/losses", losses_mean,
-                                   epoch_num * len(dataloader_train) + iter_num)
-                losses_mean = {}
+                logger.add_scalars("logs/losses", log_losses_mean,
+                                   epoch_num * len(dataloader_train) + minibatch_idx)
+                log_losses_mean = {}
             # print('Epoch: {} | Iteration: {} | Classification loss: {:1.5f} | Regression loss: {:1.5f} | Running loss: {:1.5f}'.format(epoch_num, iter_num, float(classification_loss), float(regression_loss), np.mean(loss_hist)))
 
-            if (iter_num + 1) % parser.checkpoint_interval == 0:
+            if (minibatch_idx + 1) % (parser.checkpoint_interval * parser.iterations) == 0:
                 # Save an intermediate checkpoint
                 save_checkpoint({
                     'model': model.module.state_dict(),
@@ -235,11 +227,16 @@ def main(args=None):
                     'epoch': epoch_num
                 }, experiment_fld, overwrite=True)
 
-            del loss
-
-            if (iter_num + 1) % 50 == 0:
+            if (minibatch_idx + 1) % (1 * parser.iterations) == 0:
                 # flush cuda memory every tot iterations
                 torch.cuda.empty_cache()
+
+            '''for img in images:
+                del img
+            for tgt in targets:
+                for t in tgt.values():
+                    del t
+            del loss'''
 
         if parser.dataset == 'coco':
 

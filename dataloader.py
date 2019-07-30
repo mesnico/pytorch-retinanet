@@ -81,7 +81,7 @@ class AspectRatioBasedSampler(Sampler):
                 range(0, len(order), self.batch_size)]
 
 
-class BalancedAspectRatioBasedSampler(Sampler):
+class BalancedSampler(Sampler):
 
     def __init__(self, data_source, batch_size, drop_last):
         self.data_source = data_source
@@ -115,7 +115,8 @@ class BalancedAspectRatioBasedSampler(Sampler):
 
         # determine the order of the images
         # order = list(range(len(self.data_source)))
-        order.sort(key=lambda x: self.data_source.image_aspect_ratio(x))
+        # order.sort(key=lambda x: self.data_source.image_aspect_ratio(x))
+        random.shuffle(order)
 
         # divide into groups, one group = one batch
         return [[order[x % len(order)] for x in range(i, i + self.batch_size)] for i in
