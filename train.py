@@ -183,7 +183,7 @@ def main(args=None):
             #regression_loss = regression_loss.mean()
             #loss = classification_loss + regression_loss
             loss = sum(loss for loss in loss_dict.values())
-            monitor_loss = loss
+            monitor_loss = loss.clone().detach()
             loss /= parser.iterations
             running_loss_sum += float(loss.item())
 
