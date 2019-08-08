@@ -14,6 +14,7 @@ import skimage.transform
 import pandas as pd
 from PIL import Image
 from torch.utils.data import Dataset
+import shelve
 
 
 def get_labels(metadata_dir, version='v5'):
@@ -186,7 +187,7 @@ def generate_images_annotations_json(main_dir, metadata_dir, subset, cls_index, 
 class OidDataset(Dataset):
     """Oid dataset."""
 
-    def __init__(self, main_dir, subset, version='v5', annotation_cache_dir='annotations_cache', transform=None):
+    def __init__(self, main_dir, subset, version='v5', annotation_cache_dir='annotations_cache', transform=None, all_in_memory=True):
         if version == 'v4':
             metadata = '2018_04'
         elif version == 'challenge2018':
@@ -206,20 +207,32 @@ class OidDataset(Dataset):
             self.base_dir = os.path.join(main_dir, subset)
 
         metadata_dir = os.path.join(main_dir, metadata)
-        annotation_cache_pkl = os.path.join(annotation_cache_dir, subset + '.pkl')
+        ext = '.pkl' if all_in_memory else '.db'
+        annotation_cache_filename = os.path.join(annotation_cache_dir, subset + ext)
 
         self.id_to_labels, self.id_to_labels_idx, cls_index = get_labels(metadata_dir, version=version)
 
-        if os.path.exists(annotation_cache_pkl):
-            print('Loading cached annotations: {}'.format(annotation_cache_pkl))
-            with open(annotation_cache_pkl, 'rb') as f:
-                self.annotations = pickle.load(f)
+        if os.path.exists(annotation_cache_filename+'.dat') or os.path.exists(annotation_cache_filename):
+            print('Loading cached annotations: {}'.format(annotation_cache_filename))
+            if all_in_memory:
+                with open(annotation_cache_filename, 'rb') as f:
+                    self.annotations = pickle.load(f)
+            else:
+                self.annotations = shelve.open(annotation_cache_filename)
+
         else:
-            print('Caching annotations to file: {}'.format(annotation_cache_pkl))
-            self.annotations = generate_images_annotations_json(main_dir, metadata_dir, subset, cls_index,
+            print('Caching annotations to file: {}'.format(annotation_cache_filename))
+            annotations = generate_images_annotations_json(main_dir, metadata_dir, subset, cls_index,
                                                                 version=version)
-            with open(annotation_cache_pkl, "wb") as f:
-                pickle.dump(self.annotations, f)
+            if all_in_memory:
+                with open(annotation_cache_filename, "wb") as f:
+                    pickle.dump(annotations, f)
+                self.annotations = annotations
+            else:
+                with shelve.open(annotation_cache_filename) as f:
+                    for id, ann in annotations.items():
+                        f[id] = ann
+                self.annotations = shelve.open(annotation_cache_filename)
 
         self.id_to_image_id = dict([(i, k) for i, k in enumerate(self.annotations)])
 
