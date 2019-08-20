@@ -5,7 +5,7 @@ from models import RetinanetModel
 from models.faster_rcnn import fasterrcnn_resnet101_fpn
 
 
-def create_model(num_classes, parser):
+def create_detection_model(num_classes, parser):
     if parser.net == 'retinanet':
         model = RetinanetModel(num_classes, parser.depth, pretrained=True)
     elif parser.net == 'fasterrcnn':

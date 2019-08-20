@@ -631,29 +631,18 @@ class OidDatasetVRD(Dataset):
     def __getitem__(self, idx):
 
         img = self.load_image(idx)
-        annots = self.load_annotations(idx)
+        boxes, attributes, relationships = self.load_annotations(idx)
         # sample = {'img': img, 'annot': annot}
         target = {}
+        target['boxes'] = boxes[:, :4]
+        target['labels'] = boxes[:, 4]
+
+        target['attributes'] = attributes
+        target['relationships'] = relationships
 
         if self.transform:
-            # serialize the relationships into boxes in order for passing through the transforms
-            # first, all box1, then all box2
-            t = {}
-            box1 = annots[:, :4]
-            box2 = annots[:, 5:9]
-            label1 = annots[:, 4]
-            label2 = annots[:, 9]
-            t['boxes'] = np.concatenate((box1, box2))
-            t['labels'] = np.concatenate((label1, label2))
-
-            img, t = self.transform(img, t)
-
-            # deserialize the relationships
-            assert len(t) % 2 == 0, "Every relationship should come with a couple of boxes!"
-            annots[:, :4] = t['boxes'][:len(t)//2, :4]
-            annots[:, 5:9] = t['boxes'][len(t)//2:, :4]
-
-        return img, annots
+            img, target = self.transform(img, target)
+        return img, target
 
     def image_path(self, image_index):
         path = os.path.join(self.base_dir, self.id_to_image_id[image_index] + '.jpg')
@@ -679,34 +668,27 @@ class OidDatasetVRD(Dataset):
         # get ground truth annotations
         image_annotations = self.annotations[self.id_to_image_id[image_index]]
 
-        labels = image_annotations['relationships'] if self.relationships else image_annotations['boxes']
+        labels = image_annotations['boxes']
+        attributes = image_annotations['attributes']
+        relationships = image_annotations['relationships']
 
         height, width = image_annotations['h'], image_annotations['w']
 
-        relationships = np.zeros((len(labels), 11))
+        boxes = np.zeros((len(labels), 5))
         for idx, ann in enumerate(labels):
-            xmin1 = ann['xmin1'] * width
-            xmax1 = ann['xmax1'] * width
-            ymin1 = ann['ymin1'] * height
-            ymax1 = ann['ymax1'] * height
-            xmin2 = ann['xmin2'] * width
-            xmax2 = ann['xmax2'] * width
-            ymin2 = ann['ymin2'] * height
-            ymax2 = ann['ymax2'] * height
+            cls_id = ann['cls_id']
+            x1 = ann['x1'] * width
+            x2 = ann['x2'] * width
+            y1 = ann['y1'] * height
+            y2 = ann['y2'] * height
 
-            relationships[idx, 0] = xmin1
-            relationships[idx, 1] = xmax1
-            relationships[idx, 2] = ymin1
-            relationships[idx, 3] = ymax1
-            relationships[idx, 4] = ann['cls_id_1']
-            relationships[idx, 5] = xmin2
-            relationships[idx, 6] = xmax2
-            relationships[idx, 7] = ymin2
-            relationships[idx, 8] = ymax2
-            relationships[idx, 9] = ann['cls_id_2']
-            relationships[idx, 10] = ann['rel_label']
+            boxes[idx, 0] = x1
+            boxes[idx, 1] = y1
+            boxes[idx, 2] = x2
+            boxes[idx, 3] = y2
+            boxes[idx, 4] = cls_id
 
-            return relationships
+        return boxes, attributes, relationships
 
     # used for aspect ratio sampler
     def image_aspect_ratio(self, image_index):
@@ -729,6 +711,12 @@ class OidDatasetVRD(Dataset):
 
     def num_classes(self):
         return len(self.id_to_labels)
+
+    def num_attributes(self):
+        return len(self.attr_id_to_labels)
+
+    def num_relationships(self):
+        return len(self.rel_id_to_labels)
 
     def evaluate(self, all_detections, output_dir, file_identifier=""):
         """
@@ -808,6 +796,6 @@ if __name__ == '__main__':
 
     dataset_train = OidDatasetVRD('/media/nicola/SSD/Datasets/OpenImages', subset='train')
     # sampler = BalancedSampler(dataset_train, batch_size=4, drop_last=False)
-    dataloader_train = DataLoader(dataset_train, num_workers=8, collate_fn=collate_fn)
+    dataloader_train = DataLoader(dataset_train, num_workers=8, batch_size=8, collate_fn=collate_fn)
     for sample in dataloader_train:
-        print(sample)
+        pdb.set_trace()

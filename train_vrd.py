@@ -16,10 +16,11 @@ import torch.optim as optim
 from torchvision import datasets, models
 from tensorboardX import SummaryWriter
 
-from datasets import OidDataset, DummyDataset    # TODO: only openimages is supported at the moment
+from datasets import OidDatasetVRD, DummyDataset
 from dataloader import collate_fn, AspectRatioBasedSampler, BalancedSampler, UnNormalizer, Normalizer
 from transforms import Compose, RandomHorizontalFlip, Resizer, ToTensor, Augment
 from models.create_model import create_detection_model
+from models.vrd import VRD
 from torch.utils.data import Dataset, DataLoader
 
 import coco_eval
@@ -45,6 +46,7 @@ def main(args=None):
     parser.add_argument('--csv_classes', help='Path to file containing class list (see readme)')
     parser.add_argument('--csv_val', help='Path to file containing validation annotations (optional, see readme)')
     parser.add_argument('--resume', help='Checkpoint to load')
+    parser.add_argument('--detector_snapshot', help='Detector snapshot')
 
     parser.add_argument('--depth', help='Resnet depth, must be one of 18, 34, 50, 101, 152', type=int, default=50)
     parser.add_argument('--epochs', help='Number of epochs', type=int, default=100)
@@ -63,79 +65,59 @@ def main(args=None):
     print('With {} iterations the effective batch size is {}'.format(parser.iterations, parser.bs))
 
     # Create the data loaders
-    if parser.dataset == 'coco':
-        raise NotImplementedError()
-        if parser.data_path is None:
-            raise ValueError('Must provide --data_path when training on COCO,')
-
-        dataset_train = CocoDataset(parser.data_path, set_name='train2017',
-                                    transform=Compose([Normalizer(), Augmenter(), Resizer()]))
-        dataset_val = CocoDataset(parser.data_path, set_name='val2017',
-                                  transform=Compose([Normalizer(), Resizer()]))
-
-    elif parser.dataset == 'csv':
-        raise NotImplementedError()
-
-        if parser.csv_train is None:
-            raise ValueError('Must provide --csv_train when training on COCO,')
-
-        if parser.csv_classes is None:
-            raise ValueError('Must provide --csv_classes when training on COCO,')
-
-        dataset_train = CSVDataset(train_file=parser.csv_train, class_list=parser.csv_classes,
-                                   transform=Compose([Normalizer(), Augmenter(), Resizer()]))
-
-        if parser.csv_val is None:
-            dataset_val = None
-            print('No validation annotations provided.')
-        else:
-            dataset_val = CSVDataset(train_file=parser.csv_val, class_list=parser.csv_classes,
-                                     transform=Compose([Normalizer(), Resizer()]))
-
-    elif parser.dataset == 'openimages':
+    if parser.dataset == 'openimages':
         if parser.data_path is None:
             raise ValueError('Must provide --data_path when training on OpenImages')
 
-        dataset_train = OidDataset(parser.data_path, subset='train',
+        dataset_train = OidDatasetVRD(parser.data_path, subset='train',
                                    transform=Compose(
                                        [ToTensor(), Augment(), Resizer(min_side=600, max_side=1000)]))
-        dataset_val = OidDataset(parser.data_path, subset='validation',
+        dataset_val = OidDatasetVRD(parser.data_path, subset='validation',
                                  transform=Compose([ToTensor(), Resizer(min_side=600, max_side=1000)]))
 
     elif parser.dataset == 'dummy':
         # dummy dataset used only for debugging purposes
-        dataset_train = DummyDataset(transform=Compose([ToTensor(), Resizer()]))
-        # dataset_val = DummyDataset(transform=Compose([ToTensor(), Resizer()]))
+        raise NotImplementedError()
 
     else:
         raise ValueError('Dataset type not understood (must be csv or coco), exiting.')
 
-    sampler = BalancedSampler(dataset_train, batch_size=parser.bs, drop_last=False)
-    dataloader_train = DataLoader(dataset_train, num_workers=8, collate_fn=collate_fn, batch_sampler=sampler)
+    # sampler = BalancedSampler(dataset_train, batch_size=parser.bs, drop_last=False)
+    dataloader_train = DataLoader(dataset_train, num_workers=0, batch_size=parser.bs, collate_fn=collate_fn)
 
     # if dataset_val is not None:
     #    sampler_val = AspectRatioBasedSampler(dataset_val, batch_size=1, drop_last=False)
     #    dataloader_val = DataLoader(dataset_val, num_workers=12, collate_fn=collate_fn, batch_sampler=sampler_val)
 
-    # Create the model
-    model = create_detection_model(dataset_train.num_classes(), parser)
+    # Create the detection model
+    detector = create_detection_model(dataset_train.num_classes(), parser)
 
     # Create the experiment folder
-    experiment_fld = 'experiment_{}_{}_resnet{}_{}'.format(parser.net, parser.dataset, parser.depth,
+    experiment_fld = 'vrd_experiment_{}_{}_resnet{}_{}'.format(parser.net, parser.dataset, parser.depth,
                                                         time.strftime("%Y%m%d%H%M%S", time.localtime()))
     experiment_fld = os.path.join('outputs', experiment_fld)
-    if not os.path.exists(experiment_fld):
-        os.makedirs(experiment_fld)
+    # TODO: reenable output directory creation
+    #if not os.path.exists(experiment_fld):
+    #    os.makedirs(experiment_fld)
 
     logger = SummaryWriter(experiment_fld)
 
     use_gpu = True
 
     if use_gpu:
-        model = model.cuda()
+        detector = detector.cuda()
+        detector = torch.nn.DataParallel(detector).cuda()
 
-    model = torch.nn.DataParallel(model).cuda()
-    model.training = True
+    if parser.detector_snapshot:
+        checkpoint = torch.load(parser.detector_snapshot)
+        detector.module.load_state_dict(checkpoint['model'])
+        print('Correctly loaded the detector checkpoint {}'.format(parser.detector_snapshot))
+
+    # Create the VRD model given the detector
+    model = VRD(detector, dataset=dataset_train)
+    if use_gpu:
+        model = model.cuda()
+        model = torch.nn.DataParallel(model).cuda()
 
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, verbose=True)

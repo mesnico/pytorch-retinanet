@@ -41,11 +41,29 @@ class Compose(object):
 class ToTensor(object):
     def __call__(self, image, target):
         image = F.to_tensor(image)
-        target = {
+        out_target = {
             'boxes': torch.as_tensor(target['boxes'], dtype=torch.float32),
             'labels': torch.as_tensor(target['labels'], dtype=torch.int64)
         }
-        return image, target
+
+        # if present, transforms relationships and attributes in sparse pytorch representations
+        if 'relationships' in target:
+            '''coo = target['relationships'].tocoo()
+            sparse_rel = torch.sparse.LongTensor(torch.LongTensor([coo.row.tolist(), coo.col.tolist()]),
+                                                 torch.LongTensor(coo.data.astype(np.int32)))
+            '''
+            rel_tensor = torch.LongTensor(target['relationships'].todense())
+            out_target['relationships'] = rel_tensor
+
+        if 'attributes' in target:
+            '''coo = target['attributes'].tocoo()
+            sparse_rel = torch.sparse.LongTensor(torch.LongTensor([coo.row.tolist(), coo.col.tolist()]),
+                                                 torch.LongTensor(coo.data.astype(np.int32)))
+            '''
+            attr_tensor = torch.LongTensor(target['attributes'].todense())
+            out_target['attributes'] = attr_tensor
+
+        return image, out_target
 
 
 class Resizer(object):
