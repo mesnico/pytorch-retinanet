@@ -96,9 +96,8 @@ def main(args=None):
     experiment_fld = 'vrd_experiment_{}_{}_resnet{}_{}'.format(parser.net, parser.dataset, parser.depth,
                                                         time.strftime("%Y%m%d%H%M%S", time.localtime()))
     experiment_fld = os.path.join('outputs', experiment_fld)
-    # TODO: reenable output directory creation
-    #if not os.path.exists(experiment_fld):
-    #    os.makedirs(experiment_fld)
+    if not os.path.exists(experiment_fld):
+        os.makedirs(experiment_fld)
 
     logger = SummaryWriter(experiment_fld)
 
