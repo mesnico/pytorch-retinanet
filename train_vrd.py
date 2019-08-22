@@ -83,7 +83,7 @@ def main(args=None):
         raise ValueError('Dataset type not understood (must be csv or coco), exiting.')
 
     # sampler = BalancedSampler(dataset_train, batch_size=parser.bs, drop_last=False)
-    dataloader_train = DataLoader(dataset_train, num_workers=0, batch_size=parser.bs, collate_fn=collate_fn)
+    dataloader_train = DataLoader(dataset_train, num_workers=8, batch_size=parser.bs, collate_fn=collate_fn)
 
     # if dataset_val is not None:
     #    sampler_val = AspectRatioBasedSampler(dataset_val, batch_size=1, drop_last=False)
@@ -109,7 +109,9 @@ def main(args=None):
 
     if parser.detector_snapshot:
         checkpoint = torch.load(parser.detector_snapshot)
-        detector.module.load_state_dict(checkpoint['model'])
+        weights = checkpoint['model']
+        # weights = {k.replace('module.', ''): v for k, v in weights.items()}
+        detector.load_state_dict(weights)
         print('Correctly loaded the detector checkpoint {}'.format(parser.detector_snapshot))
 
     # Create the VRD model given the detector
@@ -208,16 +210,11 @@ def main(args=None):
                     'epoch': epoch_num
                 }, experiment_fld, overwrite=True)
 
-            if (minibatch_idx + 1) % (1 * parser.iterations) == 0:
+            if (minibatch_idx + 1) % 5 == 0:
                 # flush cuda memory every tot iterations
                 torch.cuda.empty_cache()
 
-            '''for img in images:
-                del img
-            for tgt in targets:
-                for t in tgt.values():
-                    del t
-            del loss'''
+
 
         if parser.dataset == 'coco':
 

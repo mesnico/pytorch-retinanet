@@ -10,7 +10,7 @@ import pdb
 
 
 class VRD(nn.Module):
-    def __init__(self, detector, dataset):
+    def __init__(self, detector, dataset, finetune_detector=False):
         super(VRD, self).__init__()
         self.detector = detector.module if isinstance(detector, nn.DataParallel) else detector
         # we want the detector in evaluation mode
@@ -20,6 +20,7 @@ class VRD(nn.Module):
         self.num_classes = dataset.num_classes()
         self.num_attributes = dataset.num_attributes()
         self.num_relationships = dataset.num_relationships()
+        self.finetune_detector = finetune_detector
 
         self.attributes_classifier = nn.Sequential(
             nn.Linear(4 * 4 * 256 * 2 + self.num_classes, 4096),
@@ -68,9 +69,10 @@ class VRD(nn.Module):
         losses_dict = {}
 
         if self.training:
-            # train pass in the detector
-            det_loss = self.detector(images, targets)
-            losses_dict.update(det_loss)
+            # train pass in the detector, if we want
+            if self.finetune_detector:
+                det_loss = self.detector(images, targets)
+                losses_dict.update(det_loss)
 
             # transform images and targets to match the ones processed by the detector
             images, targets = self.detector.transform(images, targets)
@@ -90,6 +92,11 @@ class VRD(nn.Module):
         # TODO: warning! Do we want gradient to be propagated into the backbone of the detector?
         image_features = self.detector.backbone(images.tensors)[3]
         image_features_pooled = self.avgpool(self.detector.backbone(images.tensors)['pool'])
+
+        if not self.finetune_detector:
+            # detach the features from the graph so that we do not backprop through the detector
+            image_features = image_features.detach()
+            image_features_pooled = image_features_pooled.detach()
 
         # iterate through batch size
         attr_loss = 0

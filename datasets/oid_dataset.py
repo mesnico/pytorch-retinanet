@@ -793,9 +793,43 @@ if __name__ == '__main__':
     #sys.path.append('..')
     from dataloader import collate_fn
     from torch.utils.data import DataLoader
+    from collections import Counter
 
     dataset_train = OidDatasetVRD('/media/nicola/SSD/Datasets/OpenImages', subset='train')
     # sampler = BalancedSampler(dataset_train, batch_size=4, drop_last=False)
-    dataloader_train = DataLoader(dataset_train, num_workers=8, batch_size=8, collate_fn=collate_fn)
-    for sample in dataloader_train:
-        pdb.set_trace()
+    dataloader_train = DataLoader(dataset_train, num_workers=8, batch_size=1, collate_fn=collate_fn)
+
+    attr_list = []
+    rel_list = []
+    imgs_with_no_rels = 0
+    imgs_with_no_attrs = 0
+    imgs_with_no_attrs_rels = 0
+    for idx, (_, target) in enumerate(tqdm.tqdm(dataloader_train)):
+        # calculate some vrd stat
+        na = False
+        nr = False
+        target = target[0]
+        attributes = np.asarray(target['attributes'].todense(), dtype=np.int).reshape(-1)
+        relationships = np.asarray(target['relationships'].todense(), dtype=np.int).reshape(-1)
+
+        attr_list.extend(list(attributes))
+        rel_list.extend(list(relationships))
+
+        if np.all(attributes == 0):
+            imgs_with_no_attrs += 1
+            na = True
+        if np.all(relationships == 0):
+            imgs_with_no_rels += 1
+            nr = True
+        if na and nr:
+            imgs_with_no_attrs_rels += 1
+
+    print(rel_list)
+    print('Relations frequencies: {}'.format(Counter(rel_list)))
+    print('Attributes frequencies: {}'.format(Counter(attr_list)))
+    print('Num images with no attributes: {}'.format(imgs_with_no_attrs))
+    print('Num images with no relationships: {}'.format(imgs_with_no_rels))
+    print('Num images with both no attributes and relationships: {}'.format(imgs_with_no_attrs_rels))
+
+
+
