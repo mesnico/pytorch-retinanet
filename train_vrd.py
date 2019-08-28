@@ -83,7 +83,7 @@ def main(args=None):
         raise ValueError('Dataset type not understood (must be csv or coco), exiting.')
 
     # sampler = BalancedSampler(dataset_train, batch_size=parser.bs, drop_last=False)
-    dataloader_train = DataLoader(dataset_train, num_workers=8, batch_size=parser.bs, collate_fn=collate_fn)
+    dataloader_train = DataLoader(dataset_train, num_workers=8, batch_size=parser.bs, collate_fn=collate_fn, shuffle=True)
 
     # if dataset_val is not None:
     #    sampler_val = AspectRatioBasedSampler(dataset_val, batch_size=1, drop_last=False)
@@ -103,14 +103,14 @@ def main(args=None):
 
     use_gpu = True
 
-    if use_gpu:
-        detector = detector.cuda()
-        detector = torch.nn.DataParallel(detector).cuda()
+    #if use_gpu:
+    #    detector = detector.cuda()
+    #    detector = torch.nn.DataParallel(detector).cuda()
 
     if parser.detector_snapshot:
         checkpoint = torch.load(parser.detector_snapshot)
         weights = checkpoint['model']
-        # weights = {k.replace('module.', ''): v for k, v in weights.items()}
+        weights = {k.replace('module.', ''): v for k, v in weights.items()}
         detector.load_state_dict(weights)
         print('Correctly loaded the detector checkpoint {}'.format(parser.detector_snapshot))
 

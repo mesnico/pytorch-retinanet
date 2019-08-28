@@ -824,7 +824,6 @@ if __name__ == '__main__':
         if na and nr:
             imgs_with_no_attrs_rels += 1
 
-    print(rel_list)
     print('Relations frequencies: {}'.format(Counter(rel_list)))
     print('Attributes frequencies: {}'.format(Counter(attr_list)))
     print('Num images with no attributes: {}'.format(imgs_with_no_attrs))
