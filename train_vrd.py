@@ -121,7 +121,7 @@ def main(args=None):
         model = torch.nn.DataParallel(model).cuda()
 
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, verbose=True)
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=4)
 
     # Load checkpoint if needed
     start_epoch = 0

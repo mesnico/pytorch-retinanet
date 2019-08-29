@@ -20,12 +20,12 @@ from transforms import Compose, RandomHorizontalFlip, ToTensor
 from dataloader import collate_fn, AspectRatioBasedSampler, \
     UnNormalizer, Normalizer
 from datasets import OidDataset
-from create_model import create_model
+from models.create_model import create_detection_model
 
 # assert torch.__version__.split('.')[1] == '4'
 
 use_gpu = True
-det_thres = 0.4
+det_thres = 0.05
 
 if not use_gpu:
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
@@ -65,10 +65,11 @@ def main(args=None):
     dataloader = DataLoader(dataset, num_workers=1, collate_fn=collate_fn, shuffle=False)
 
     # Create the model
-    model = create_model(dataset.num_classes(), parser)
+    model = create_detection_model(dataset.num_classes(), parser)
 
     checkpoint = torch.load(parser.model, map_location=lambda storage, loc: storage)
     weights = checkpoint['model']
+    weights = {k.replace('module.',''): v for k,v in weights.items()}
     model.load_state_dict(weights)
 
     if use_gpu:

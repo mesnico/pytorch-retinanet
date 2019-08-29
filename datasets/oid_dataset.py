@@ -346,7 +346,6 @@ def generate_images_annotations_vrd_json(main_dir, metadata_dir, subset, cls_ind
                 now += 1
                 pbar.update(now)
     else:
-        raise NotImplementedError
         # simply cache image informations from the image folder.
         # This is needed for test detections for challenge submission
         print('WARNING: annotation file not present! Supposing test dataset without annotations')
@@ -357,12 +356,12 @@ def generate_images_annotations_vrd_json(main_dir, metadata_dir, subset, cls_ind
             with Image.open(img_path) as img:
                 width, height = img.width, img.height
 
-            # dummy annotation
-            annotation = {'cls_id_1': 0, 'cls_id_2': 0,
-                              'xmin1': 0, 'xmax1': 0, 'ymin1': 0, 'ymax1': 0,
-                              'xmin2': 0, 'xmax2': 0, 'ymin2': 0, 'ymax2': 0,
-                              'rel_label': 0}
-            id_annotations[img_id] = {'w': width, 'h': height, 'boxes': [annotation]}
+            # dummy annotations
+            boxes = {'cls_id': 0, 'x1': 0, 'x2': 0, 'y1': 0, 'y2': 0}
+            attributes = scipy.sparse.csr_matrix(np.zeros((1,1)))
+            relationships = scipy.sparse.csr_matrix(np.zeros((1,1)))
+            id_annotations[img_id] = {'w': width, 'h': height, 'boxes': [boxes], 'attributes': attributes,
+                                      'relationships': relationships}
 
     return id_annotations
 

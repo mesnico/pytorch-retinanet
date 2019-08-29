@@ -5,15 +5,15 @@ from models import RetinanetModel
 from models.faster_rcnn import fasterrcnn_resnet101_fpn
 
 
-def create_detection_model(num_classes, parser):
+def create_detection_model(num_classes, parser, **kwargs):
     if parser.net == 'retinanet':
         model = RetinanetModel(num_classes, parser.depth, pretrained=True)
     elif parser.net == 'fasterrcnn':
         # load a model pre-trained pre-trained on COCO
         if parser.depth == 50:
-            model = torchvision.models.detection.fasterrcnn_resnet50_fpn(pretrained=True)
+            model = torchvision.models.detection.fasterrcnn_resnet50_fpn(pretrained=True, **kwargs)
         elif parser.depth == 101:
-            model = fasterrcnn_resnet101_fpn(pretrained_backbone=True, min_size=600, max_size=1000)
+            model = fasterrcnn_resnet101_fpn(pretrained_backbone=True, min_size=600, max_size=1000, **kwargs)
         else:
             raise ValueError('Unsupported model depth, must be one of 50, 101')
         # replace the classifier with a new one, that has

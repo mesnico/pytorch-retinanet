@@ -6,6 +6,7 @@ import itertools
 
 import numpy as np
 from torchvision.models.detection.transform import GeneralizedRCNNTransform
+from models.focal_loss import FocalLoss
 
 import pdb
 
@@ -58,11 +59,16 @@ class VRD(nn.Module):
 
         self.avgpool = nn.AdaptiveAvgPool2d((4, 4))
         self.attr_loss_fn = nn.MultiLabelSoftMarginLoss(reduction='sum')    # multi-label classification problem
-        self.rel_loss_fn = nn.CrossEntropyLoss(reduction='sum')    # standard classification problem
+        # self.rel_loss_fn = nn.CrossEntropyLoss(reduction='sum')    # standard classification problem
+        self.rel_loss_fn = FocalLoss(num_classes=self.num_relationships, reduction='sum')
 
-    def set_training(self, training=True):
-        self.training = training
-        self.detector.training = training
+    def train(self, mode=True):
+        self.detector.train(mode)
+        return super().train(mode)
+
+    def eval(self):
+        self.detector.eval()
+        return super().eval()
 
     def bbox_union(self, boxes_perm, padding=0):
         x1, _ = torch.min(boxes_perm[:, :, [0, 4]], dim=2)
@@ -93,7 +99,7 @@ class VRD(nn.Module):
 
         # add some null random relationship to the set (10%)
         rand_matrix = torch.rand_like(relationships, dtype=torch.float)
-        c = rand_matrix > 0.9
+        c = rand_matrix < 0.3
         chosen += c
 
         # make sure the diagonal is 0 (there are no relationships between an object and itself)
@@ -115,6 +121,7 @@ class VRD(nn.Module):
             raise ValueError("In training mode, targets should be passed")
 
         losses_dict = {}
+        vrd_detections = []
 
         if self.training:
             # train pass in the detector, if we want
@@ -149,7 +156,15 @@ class VRD(nn.Module):
         attr_loss = 0
         rel_loss = 0
         for idx, (img, img_f, img_f_pool, obj, l) in enumerate(zip(images.tensors, image_features, image_features_pooled, objects, labels)):
-            # compute the scale factor between the image dimensions and the feature map dimension
+            # if evaluating and no objects are detected, return empty tensors
+            if not self.training and obj.shape[0] == 0:
+                dummy_tensor = torch.FloatTensor([[0]])
+                if self.cuda_on:
+                    dummy_tensor = dummy_tensor.cuda()
+                vrd_detections.append({'relationships': dummy_tensor, 'relationships_scores': dummy_tensor,
+                                       'attributes': dummy_tensor, 'attributes_scores': dummy_tensor})
+                break
+
             limit = 80
             how_many = obj.size(0)
             if how_many > limit:
@@ -159,6 +174,8 @@ class VRD(nn.Module):
                 targets[idx]['relationships'] = targets[idx]['relationships'][:limit, :limit]
                 targets[idx]['attributes'] = targets[idx]['attributes'][:limit, :]
                 print('Skipping... too many objects ({})'.format(how_many))
+
+            # compute the scale factor between the image dimensions and the feature map dimension
             scale_factor = np.array(img_f.shape[-2:]) / np.array(img.shape[-2:])
             assert scale_factor[0] == scale_factor[1]
             scale = scale_factor[0]
@@ -182,7 +199,8 @@ class VRD(nn.Module):
             if self.training:
                 attr_loss += self.attr_loss_fn(attr_out, targets[idx]['attributes'].float())
             else:
-                inferred_attr = F.softmax(attr_out, dim=1)
+                inferred_attr = torch.sigmoid(attr_out)
+                attr_scores, attr_indexes = torch.sort(inferred_attr, dim=1, descending=True)
 
             # Infer the relationships between objects
 
@@ -264,10 +282,11 @@ class VRD(nn.Module):
                     dim=2
                 )
 
-            # If training, we suppress some of the relationships
-            # Hence, calculate a filter in order to control the amount of relations and non-relations seen by the architecture.
-            choosen_relation_indexes = self.choose_rel_indexes(targets[idx]['relationships'])
+
             if self.training:
+                # If training, we suppress some of the relationships
+                # Hence, calculate a filter in order to control the amount of relations and non-relations seen by the architecture.
+                choosen_relation_indexes = self.choose_rel_indexes(targets[idx]['relationships'])
                 pooled_concat = pooled_concat[choosen_relation_indexes]
             else:
                 # Reshape for passing through the classifier
@@ -277,9 +296,19 @@ class VRD(nn.Module):
             rel_out = self.relationships_classifier(pooled_concat)
             if self.training:
                 t = targets[idx]['relationships'][choosen_relation_indexes]
-                rel_loss += self.rel_loss_fn(rel_out, t)
+                rel_loss += 10 * self.rel_loss_fn(rel_out, t)
             else:
                 inferred_rels = F.softmax(rel_out, dim=1)
+                rels_scores, rels_indexes = torch.max(inferred_rels, dim=1)
+
+                # reshape back to a square matrix
+                rels_scores = rels_scores.view(obj.size(0), obj.size(0))
+                rels_indexes = rels_indexes.view(obj.size(0), obj.size(0))
+
+            if not self.training:
+                # accumulate VRD detections from every batch
+                vrd_detections.append({'relationships': rels_indexes, 'relationships_scores':rels_scores,
+                                       'attributes': attr_indexes, 'attributes_scores': attr_scores})
 
         if self.training:
             # Compute the mean losses over all detections for every batch
@@ -291,8 +320,9 @@ class VRD(nn.Module):
             return losses_dict
 
         else:
-            raise NotImplementedError
-            # TODO: merge boxes, inferred_attr and inferred_rels using the same interface of the detection in torchvision
+            # Merge boxes, inferred_attr and inferred_rels using the same interface of the detection in torchvision
+            detections = [{**obj_det, **vrd_det} for obj_det, vrd_det in zip(detections, vrd_detections)]
+            return detections
 
     def cuda(self, device=None):
         self.cuda_on = True

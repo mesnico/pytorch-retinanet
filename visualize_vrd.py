@@ -17,12 +17,16 @@ from torchvision import datasets, models
 
 from transforms import Compose, RandomHorizontalFlip, ToTensor
 from dataloader import collate_fn, AspectRatioBasedSampler, UnNormalizer, Normalizer
-from datasets.oid_dataset import OidDataset
+from datasets.oid_dataset import OidDataset, OidDatasetVRD
 from models.create_model import create_detection_model
+from models.vrd import VRD
 
 # assert torch.__version__.split('.')[1] == '4'
-thres = 0.1
-use_gpu = True
+thres = 0.5
+rel_thresh = 0.5
+attr_thresh = 0.5
+
+use_gpu = False
 
 if not use_gpu:
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
@@ -43,25 +47,18 @@ def main(args=None):
 
     parser = parser.parse_args(args)
 
-    if parser.dataset == 'coco':
-        raise NotImplementedError()
-        dataset_val = CocoDataset(parser.data_path, set_name='val2017',
-                                  transform=Compose([Normalizer(), Resizer()]))
-    elif parser.dataset == 'openimages':
-        dataset_val = OidDataset(parser.data_path, subset='validation',
-                                 transform=Compose([ToTensor()]))
-    elif parser.dataset == 'csv':
-        raise NotImplementedError()
-        dataset_val = CSVDataset(train_file=parser.csv_train, class_list=parser.csv_classes,
-                                 transform=Compose([Normalizer(), Resizer()]))
+    if parser.dataset == 'openimages':
+        dataset_val = OidDatasetVRD(parser.data_path, subset='validation',
+                                    transform=Compose([ToTensor()]))
     else:
         raise ValueError('Dataset type not understood (must be csv or coco), exiting.')
 
-    sampler_val = AspectRatioBasedSampler(dataset_val, batch_size=1, drop_last=False)
-    dataloader_val = DataLoader(dataset_val, num_workers=1, collate_fn=collate_fn, batch_sampler=sampler_val)
+    #sampler_val = AspectRatioBasedSampler(dataset_val, batch_size=1, drop_last=False)
+    dataloader_val = DataLoader(dataset_val, num_workers=1, collate_fn=collate_fn, batch_size=1)
 
     # Create the model
-    model = create_detection_model(dataset_val.num_classes(), parser)
+    detector = create_detection_model(dataset_val.num_classes(), parser, box_score_thresh=thres)
+    model = VRD(detector, dataset=dataset_val)
 
     checkpoint = torch.load(parser.model, map_location=lambda storage, loc: storage)
     weights = checkpoint['model']
@@ -73,11 +70,15 @@ def main(args=None):
 
     model.eval()
 
-    def draw_caption(image, box, caption):
-
+    def draw_object_bb(image, box, caption):
         b = np.array(box).astype(int)
         cv2.putText(image, caption, (b[0], b[1] - 10), cv2.FONT_HERSHEY_PLAIN, 1, (0, 0, 0), 2)
         cv2.putText(image, caption, (b[0], b[1] - 10), cv2.FONT_HERSHEY_PLAIN, 1, (255, 255, 255), 1)
+        cv2.rectangle(img, (b[0], b[1]), (b[2], b[3]), color=(0, 0, 255), thickness=2)
+
+    def draw_relationship(image, subj, obj, rel_name):
+        cv2.arrowedLine(image, (subj[0], subj[1]), (obj[0], obj[1]), (255, 0, 0), 2, tipLength=0.02)
+        cv2.putText(image, rel_name, ((subj[0] + obj[0]) / 2, (subj[1] + obj[1]) / 2), cv2.FONT_HERSHEY_PLAIN, 1, (0, 255, 0), 2)
 
     for idx, data in enumerate(dataloader_val):
         with torch.no_grad():
@@ -98,11 +99,14 @@ def main(args=None):
             output = outputs[0]  # take the only batch
             scores = output['scores']
             classification = output['labels']
-            transformed_anchors = output['boxes']
+            boxes = output['boxes']
+            relationships = output['relationships']
+            rel_scores = output['relationships_scores']
+            attributes = output['attributes']
+            attr_scores = output['attributes_scores']
             # from here, interface to the code already written in the original repo
 
             print('Elapsed time: {}'.format(time.time() - st))
-            idxs = np.where(scores > thres)
             img = np.array(255 * images[0]).copy()
 
             img[img < 0] = 0
@@ -127,17 +131,24 @@ def main(args=None):
                 print('GT: '+label_name)
             '''
 
-            for j in range(idxs[0].shape[0]):
-                bbox = transformed_anchors[idxs[0][j], :]
-                x1 = int(bbox[0])
-                y1 = int(bbox[1])
-                x2 = int(bbox[2])
-                y2 = int(bbox[3])
-                label_name = dataset_val.labels[int(classification[idxs[0][j]])]
-                draw_caption(img, (x1, y1, x2, y2), label_name)
-
-                cv2.rectangle(img, (x1, y1), (x2, y2), color=(0, 0, 255), thickness=2)
+            # Draw objects
+            for j in range(boxes.shape[0]):
+                bbox = boxes[j, :4].int()
+                attr = attributes[j, 0].item() if attr_scores[j, 0] > attr_thresh else 0      # TODO: only the top rank attribute is considered, generalize better!
+                label_name = dataset_val.labels[int(classification[j])]
+                attr_name = ': ' + dataset_val.attr_id_to_labels[attr] if attr != 0 else ''
+                draw_object_bb(img, bbox, label_name + attr_name)
                 print('Detection: '+label_name)
+
+            # Draw relationships
+            for s_ind in range(relationships.shape[0]):
+                for o_ind in range(relationships.shape[1]):
+                    subj = boxes[s_ind, :4].int()
+                    obj = boxes[o_ind, :4].int()
+                    rel = relationships[s_ind, o_ind].item() if rel_scores[s_ind, o_ind] > rel_thresh else 0
+                    if rel != 0:
+                        rel_name = dataset_val.rel_id_to_labels[rel]
+                        draw_relationship(img, subj, obj, rel_name)
 
             cv2.imshow('img', img)
             cv2.waitKey(0)
