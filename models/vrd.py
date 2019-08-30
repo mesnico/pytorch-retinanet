@@ -59,8 +59,8 @@ class VRD(nn.Module):
 
         self.avgpool = nn.AdaptiveAvgPool2d((4, 4))
         self.attr_loss_fn = nn.MultiLabelSoftMarginLoss(reduction='sum')    # multi-label classification problem
-        # self.rel_loss_fn = nn.CrossEntropyLoss(reduction='sum')    # standard classification problem
-        self.rel_loss_fn = FocalLoss(num_classes=self.num_relationships, reduction='sum')
+        self.rel_loss_fn = nn.CrossEntropyLoss(reduction='sum')    # standard classification problem
+        # self.rel_loss_fn = FocalLoss(num_classes=self.num_relationships, reduction='sum')
 
     def train(self, mode=True):
         self.detector.train(mode)
@@ -94,25 +94,32 @@ class VRD(nn.Module):
     def choose_rel_indexes(self, relationships):
         # get annotated relationships and their opposite (dog is under the table and table is NOT under the dog)
         a = relationships > 0
-        b = torch.transpose(a, 0, 1)
-        chosen = a + b
+        #b = torch.transpose(a, 0, 1)
+        chosen = a  # + b
 
-        # add some null random relationship to the set (10%)
+        # add some null random relationship to the set (30%)
         rand_matrix = torch.rand_like(relationships, dtype=torch.float)
-        c = rand_matrix < 0.3
-        chosen += c
+        #c = rand_matrix < 0.3
+        #chosen += c
+
+        # add a random amount of null relationships
+        rand_values = torch.randint(0, relationships.shape[0] ** 2, size=(torch.nonzero(relationships).shape[0],))
+        d = torch.zeros_like(relationships)
+        d = d.view(-1)
+        d[rand_values] = 1
+        d = d.view(relationships.shape[0], relationships.shape[1])
+        chosen += d.byte()
 
         # make sure the diagonal is 0 (there are no relationships between an object and itself)
-        not_diagonal = 1 - torch.eye(relationships.size(0))
+        '''not_diagonal = 1 - torch.eye(relationships.size(0))
         not_diagonal = not_diagonal.byte()
         if self.cuda_on:
             not_diagonal = not_diagonal.cuda()
-        chosen = chosen * not_diagonal
+        chosen = chosen * not_diagonal'''
 
         # at least one value should be 1 in order to avoid that the whole matrix is 0 (floating point exception happens)
         rawind = torch.argmax(rand_matrix)
-        indexes = torch.LongTensor([rawind // relationships.size(0), rawind % relationships.size(1)])
-        chosen[indexes] = 1
+        chosen[rawind // relationships.size(0), rawind % relationships.size(1)] = 1
 
         return chosen > 0
 
@@ -165,6 +172,7 @@ class VRD(nn.Module):
                                        'attributes': dummy_tensor, 'attributes_scores': dummy_tensor})
                 break
 
+            # Hard limit detected objects
             limit = 80
             how_many = obj.size(0)
             if how_many > limit:
@@ -199,7 +207,6 @@ class VRD(nn.Module):
             if self.training:
                 attr_loss += self.attr_loss_fn(attr_out, targets[idx]['attributes'].float())
             else:
-                inferred_attr = torch.sigmoid(attr_out)
                 attr_scores, attr_indexes = torch.sort(inferred_attr, dim=1, descending=True)
 
             # Infer the relationships between objects
@@ -282,7 +289,6 @@ class VRD(nn.Module):
                     dim=2
                 )
 
-
             if self.training:
                 # If training, we suppress some of the relationships
                 # Hence, calculate a filter in order to control the amount of relations and non-relations seen by the architecture.
@@ -296,9 +302,10 @@ class VRD(nn.Module):
             rel_out = self.relationships_classifier(pooled_concat)
             if self.training:
                 t = targets[idx]['relationships'][choosen_relation_indexes]
-                rel_loss += 10 * self.rel_loss_fn(rel_out, t)
+                rel_loss += self.rel_loss_fn(rel_out, t)
             else:
                 inferred_rels = F.softmax(rel_out, dim=1)
+                pdb.set_trace()
                 rels_scores, rels_indexes = torch.max(inferred_rels, dim=1)
 
                 # reshape back to a square matrix
