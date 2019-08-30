@@ -11,31 +11,11 @@ from models.focal_loss import FocalLoss
 import pdb
 
 
-class VRD(nn.Module):
-    def __init__(self, detector, dataset, finetune_detector=False, rel_context='relation_box'):
-        super(VRD, self).__init__()
-        self.detector = detector.module if isinstance(detector, nn.DataParallel) else detector
-        self.detector.training = True
-        self.training = True
-        self.cuda_on = False
-        self.num_classes = dataset.num_classes()
-        self.num_attributes = dataset.num_attributes()
+class RelationshipsModel(nn.Module):
+    def __init__(self, dataset, rel_context='relation_box'):
+        super().__init__()
+
         self.num_relationships = dataset.num_relationships()
-        self.finetune_detector = finetune_detector
-        self.rel_context = rel_context
-
-        # self.multiprocessing_pool = mp.Pool(8)
-
-        self.attributes_classifier = nn.Sequential(
-            nn.Linear(4 * 4 * 256 * 2 + self.num_classes, 4096),
-            nn.ReLU(),
-            nn.Dropout(),
-            nn.Linear(4096, 4096),
-            nn.ReLU(),
-            nn.Dropout(),
-            nn.Linear(4096, self.num_attributes),
-        )
-
         if rel_context == 'relation_box':
             input_size = 4 * 4 * 256 * 3 + 2 * self.num_classes
         elif rel_context == 'whole_image':
@@ -46,7 +26,6 @@ class VRD(nn.Module):
             input_size = 4 * 4 * 256 * 2 + 2 * self.num_classes
         # add spatial feature
         input_size += 14
-
         self.relationships_classifier = nn.Sequential(
             nn.Linear(input_size, 4096),
             nn.ReLU(),
@@ -57,18 +36,8 @@ class VRD(nn.Module):
             nn.Linear(4096, self.num_relationships),
         )
 
-        self.avgpool = nn.AdaptiveAvgPool2d((4, 4))
-        self.attr_loss_fn = nn.MultiLabelSoftMarginLoss(reduction='sum')    # multi-label classification problem
         self.rel_loss_fn = nn.CrossEntropyLoss(reduction='sum')    # standard classification problem
         # self.rel_loss_fn = FocalLoss(num_classes=self.num_relationships, reduction='sum')
-
-    def train(self, mode=True):
-        self.detector.train(mode)
-        return super().train(mode)
-
-    def eval(self):
-        self.detector.eval()
-        return super().eval()
 
     def bbox_union(self, boxes_perm, padding=0):
         x1, _ = torch.min(boxes_perm[:, :, [0, 4]], dim=2)
@@ -123,6 +92,177 @@ class VRD(nn.Module):
 
         return chosen > 0
 
+    def forward(self, boxes, labels, targets, img_features, pooled_regions, scale):
+        # Infer the relationships between objects
+
+        # Pseudo-code:
+        # for every couple:
+        # compute the union bounding box
+        # pool this region in order to extract features
+        # concat subj+label, rel, obj+label features
+        # pass through the relationships classifier
+
+        # 0. Compute the union bounding box and the spatial features
+        obj_perm = boxes.unsqueeze(0).repeat(boxes.size(0), 1, 1)  # K x K x 4
+        subj_perm = boxes.unsqueeze(1).repeat(1, boxes.size(0), 1)  # K x K x 4
+        box1box2_perm = torch.cat((obj_perm, subj_perm), dim=2)  # K x K x 8
+        relboxes = self.bbox_union(box1box2_perm, padding=10)  # K x K x 4
+        box1relboxes_perm = torch.cat((obj_perm, relboxes), dim=2)  # K x K x 8
+        relboxesbox2_perm = torch.cat((relboxes, subj_perm), dim=2)  # K x K x 8
+
+        box1box2_perm_feats = self.spatial_features(box1box2_perm)  # K x K x 4
+        so_feats = box1box2_perm_feats[:, :, :-2]  # K x K x 2, exclude areas
+        area_boxes_over_img = box1box2_perm_feats[:, :, -2:] / (
+                    img.shape[-1] * img.shape[-2])  # take only the areas and normalize with respect to frame
+        sp_feats = self.spatial_features(box1relboxes_perm)[:, :, :-2]  # K x K x 4
+        po_feats = self.spatial_features(relboxesbox2_perm)[:, :, :-2]  # K x K x 4
+
+        spatial_features = torch.cat([so_feats, sp_feats, po_feats, area_boxes_over_img], dim=2)
+
+        # 1. Compute the union bounding box, only if rel_context is not None
+        if self.rel_context == 'relation_box':
+            # 2. Pool all the regions
+            relboxes = relboxes.view(-1, 4)
+            pooled_rel_regions = torchvision.ops.roi_align(img_features.unsqueeze(0), [relboxes], output_size=(4, 4),
+                                                           spatial_scale=scale)  # K x K x 256 x 4 x 4
+            # Prepare the relationship features for the concatenation
+            pooled_rel_regions = pooled_rel_regions.view(boxes.size(0), boxes.size(0), -1)  # K x K x 256*4*4
+        elif self.rel_context == 'whole_image':
+            raise NotImplementedError()
+            # TODO!
+        elif self.rel_context == 'image_level_labels':
+            raise NotImplementedError()
+            # TODO!
+
+        # Prepare the object features for concatenation
+        pooled_obj_regions = pooled_regions.view(pooled_regions.size(0), -1). \
+            unsqueeze(0).repeat(boxes.size(0), 1, 1)  # K x K x 256*4*4
+        pooled_subj_regions = pooled_regions.view(pooled_regions.size(0), -1). \
+            unsqueeze(1).repeat(1, boxes.size(0), 1)  # K x K x 256*4*4
+
+        # Handle labels
+        one_hot_obj_label = nn.functional.one_hot(labels, self.num_classes).float().unsqueeze(0).repeat(boxes.size(0), 1,
+                                                                                                        1)  # K x K x num_classes
+        one_hot_subj_label = nn.functional.one_hot(labels, self.num_classes).float().unsqueeze(1).repeat(1, boxes.size(0),
+                                                                                                         1)  # K x K x num_classes
+
+        # 3. Concatenate all the features
+        pooled_concat = torch.cat(
+            (
+                pooled_obj_regions, one_hot_obj_label,
+                pooled_subj_regions, one_hot_subj_label,
+                spatial_features
+            ),
+            dim=2
+        )
+
+        if self.rel_context is not None:
+            # Add the information regarding the relationship context
+            pooled_concat = torch.cat(
+                (
+                    pooled_concat, pooled_rel_regions
+                ),
+                dim=2
+            )
+
+        if self.training:
+            # If training, we suppress some of the relationships
+            # Hence, calculate a filter in order to control the amount of relations and non-relations seen by the architecture.
+            choosen_relation_indexes = self.choose_rel_indexes(targets['relationships'])
+            pooled_concat = pooled_concat[choosen_relation_indexes]
+        else:
+            # Reshape for passing through the classifier
+            pooled_concat = pooled_concat.view(boxes.size(0) ** 2, -1)
+
+        # 4. Run the Relationship classifier
+        rel_out = self.relationships_classifier(pooled_concat)
+        if self.training:
+            t = targets[idx]['relationships'][choosen_relation_indexes]
+            rel_loss = self.rel_loss_fn(rel_out, t)
+            return rel_loss
+        else:
+            inferred_rels = F.softmax(rel_out, dim=1)
+            rels_scores, rels_indexes = torch.max(inferred_rels, dim=1)
+
+            # reshape back to a square matrix
+            rels_scores = rels_scores.view(boxes.size(0), boxes.size(0))
+            rels_indexes = rels_indexes.view(boxes.size(0), boxes.size(0))
+
+            return {'relationships': rels_indexes, 'relationships_scores': rels_scores}
+
+
+class AttributesModel(nn.Module):
+    def __init__(self, dataset):
+        super().__init__()
+        self.num_attributes = dataset.num_attributes()
+        self.attributes_classifier = nn.Sequential(
+            nn.Linear(4 * 4 * 256 * 2 + self.num_classes, 4096),
+            nn.ReLU(),
+            nn.Dropout(),
+            nn.Linear(4096, 4096),
+            nn.ReLU(),
+            nn.Dropout(),
+            nn.Linear(4096, self.num_attributes),
+        )
+        self.attr_loss_fn = nn.MultiLabelSoftMarginLoss(reduction='sum')  # multi-label classification problem
+
+    def forward(self, boxes, labels, targets, img_features, pooled_regions):
+        # Infer the attributes for every object in the images
+
+        # 1. Concatenate image_features, pooled_regions and labels
+        attr_features = torch.cat(
+            (
+                pooled_regions.view(pooled_regions.size(0), -1),  # K x (256*4*4)
+                img_features.view(-1).unsqueeze(0).expand(boxes.size(0), -1),
+                # concatenate image level features to all the regions  K x (256*4*4)
+                nn.functional.one_hot(labels, self.num_classes).float()  # K x num_classes
+            ),
+            dim=1
+        )
+
+        # 2. Run the multi-label classifier
+        attr_out = self.attributes_classifier(attr_features)  # K x num_attr
+        if self.training:
+            attr_loss = self.attr_loss_fn(attr_out, targets['attributes'].float())
+            return attr_loss
+        else:
+            inferred_attr = torch.sigmoid(attr_out)
+            attr_scores, attr_indexes = torch.sort(inferred_attr, dim=1, descending=True)
+            return {'attributes': attr_indexes, 'attributes_scores': attr_scores}
+
+
+class VRD(nn.Module):
+    def __init__(self, detector, dataset, finetune_detector=False, train_relationships=True,
+                 train_attributes=True, rel_context='relation_box'):
+        super(VRD, self).__init__()
+
+        # asserts
+        assert train_relationships or train_attributes, "You have to train one of relationships or attributes!"
+        assert not (rel_context is None and train_relationships), "You have to specify a valid rel_context!"
+
+        self.detector = detector.module if isinstance(detector, nn.DataParallel) else detector
+        self.cuda_on = False
+        self.num_classes = dataset.num_classes()
+        self.finetune_detector = finetune_detector
+        self.rel_context = rel_context
+        self.train_relationships = train_relationships
+        self.train_attributes = train_attributes
+
+        if train_relationships:
+            self.relationships_net = RelationshipsModel(dataset, rel_context)
+        if train_attributes:
+            self.attributes_net = AttributesModel(dataset)
+
+        self.avgpool = nn.AdaptiveAvgPool2d((4, 4))
+
+    def train(self, mode=True):
+        self.detector.train(mode)
+        return super().train(mode)
+
+    def eval(self):
+        self.detector.eval()
+        return super().eval()
+
     def forward(self, images, targets=None):
         if self.training and targets is None:
             raise ValueError("In training mode, targets should be passed")
@@ -140,31 +280,30 @@ class VRD(nn.Module):
             images, targets = self.detector.transform(images, targets)
 
             # objects from every batch
-            objects = [t['boxes'] for t in targets]
+            boxes = [t['boxes'] for t in targets]
             labels = [t['labels'] for t in targets]  # labels from every batch
         else:
             # forward through the object detector in order to retrieve objects from the image
             detections = self.detector(images)
-            objects = [d['boxes'] for d in detections]
+            boxes = [d['boxes'] for d in detections]
             labels = [d['labels'] for d in detections]
 
             # transform images and targets to match the ones processed by the detector
             images, targets = self.detector.transform(images, targets)
 
-        image_features = self.detector.backbone(images.tensors)[3]
+        # image_features = self.detector.backbone(images.tensors)[3]
         image_features_pooled = self.avgpool(self.detector.backbone(images.tensors)['pool'])
 
         if not self.finetune_detector:
             # detach the features from the graph so that we do not backprop through the detector
-            image_features = image_features.detach()
             image_features_pooled = image_features_pooled.detach()
 
         # iterate through batch size
         attr_loss = 0
         rel_loss = 0
-        for idx, (img, img_f, img_f_pool, obj, l) in enumerate(zip(images.tensors, image_features, image_features_pooled, objects, labels)):
+        for idx, (img, img_f, b, l) in enumerate(zip(images.tensors, image_features_pooled, boxes, labels)):
             # if evaluating and no objects are detected, return empty tensors
-            if not self.training and obj.shape[0] == 0:
+            if not self.training and b.shape[0] == 0:
                 dummy_tensor = torch.FloatTensor([[0]])
                 if self.cuda_on:
                     dummy_tensor = dummy_tensor.cuda()
@@ -174,9 +313,9 @@ class VRD(nn.Module):
 
             # Hard limit detected objects
             limit = 80
-            how_many = obj.size(0)
+            how_many = b.size(0)
             if how_many > limit:
-                obj = obj[:limit]
+                b = b[:limit]
                 l = l[:limit]
                 targets[idx]['labels'] =  targets[idx]['labels'][:limit]
                 targets[idx]['relationships'] = targets[idx]['relationships'][:limit, :limit]
@@ -188,134 +327,36 @@ class VRD(nn.Module):
             assert scale_factor[0] == scale_factor[1]
             scale = scale_factor[0]
 
-            pooled_regions = torchvision.ops.roi_align(img_f.unsqueeze(0), [obj], output_size=(4, 4), spatial_scale=scale)   # K x C x H x W
+            pooled_regions = torchvision.ops.roi_align(img_f.unsqueeze(0), [b],
+                                                       output_size=(4, 4), spatial_scale=scale)   # K x C x H x W
 
-            # Infer the attributes for every object in the images
+            # Prepare targets if needed (during training)
+            t = targets[idx] if self.training else None
 
-            # 1. Concatenate image_features, pooled_regions and labels
-            attr_features = torch.cat(
-                (
-                    pooled_regions.view(pooled_regions.size(0), -1),    # K x (256*4*4)
-                    img_f_pool.view(-1).unsqueeze(0).expand(obj.size(0), -1),   # concatenate image level features to all the regions  K x (256*4*4)
-                    nn.functional.one_hot(l, self.num_classes).float()     # K x num_classes
-                ),
-                dim=1
-            )
+            vrd_detection_dict = {}
 
-            # 2. Run the multi-label classifier
-            attr_out = self.attributes_classifier(attr_features)    # K x num_attr
-            if self.training:
-                attr_loss += self.attr_loss_fn(attr_out, targets[idx]['attributes'].float())
-            else:
-                attr_scores, attr_indexes = torch.sort(inferred_attr, dim=1, descending=True)
+            # Train or Infer relationships
+            if self.train_relationships:
+                out_rel = self.relationships_net(b, l, t, img_f, pooled_regions, scale)
+                if self.training:
+                    # out_rel contains a loss value
+                    rel_loss += out_rel
+                else:
+                    # out_rel contains detections
+                    vrd_detection_dict = out_rel
 
-            # Infer the relationships between objects
-
-            # Pseudo-code:
-            # for every couple:
-                # compute the union bounding box
-                # pool this region in order to extract features
-                # concat subj+label, rel, obj+label features
-                # pass through the relationships classifier
-
-            # 0. Compute the union bounding box and the spatial features
-            obj_perm = obj.unsqueeze(0).repeat(obj.size(0), 1, 1)  # K x K x 4
-            subj_perm = obj.unsqueeze(1).repeat(1, obj.size(0), 1) # K x K x 4
-            box1box2_perm = torch.cat((obj_perm, subj_perm), dim=2)  # K x K x 8
-            relboxes = self.bbox_union(box1box2_perm, padding=10)  # K x K x 4
-            box1relboxes_perm = torch.cat((obj_perm, relboxes), dim=2)  # K x K x 8
-            relboxesbox2_perm = torch.cat((relboxes, subj_perm), dim=2)  # K x K x 8
-
-            box1box2_perm_feats = self.spatial_features(box1box2_perm)  # K x K x 4
-            so_feats = box1box2_perm_feats[:, :, :-2]   # K x K x 2, exclude areas
-            area_boxes_over_img = box1box2_perm_feats[:, :, -2:] / (img.shape[-1] * img.shape[-2])   # take only the areas and normalize with respect to frame
-            sp_feats = self.spatial_features(box1relboxes_perm)[:, :, :-2]  # K x K x 4
-            po_feats = self.spatial_features(relboxesbox2_perm)[:, :, :-2]  # K x K x 4
-
-            spatial_features = torch.cat([so_feats, sp_feats, po_feats, area_boxes_over_img], dim=2)
-            '''
-            for (idx1, box1), (idx2, box2) in itertools.permutations(enumerate(obj), 2):
-                rel_box = self.bbox_union(box1, box2, padding=10)
-                rel_boxes[idx1, idx2, :] = rel_box
-
-                so = self.spatial_features(box1, box2)
-                sp = self.spatial_features(box1, rel_box)
-                po = self.spatial_features(rel_box, box2)
-                area_boxes_over_img = torch.FloatTensor([(box1[2] - box1[0]) * (box1[3] - box1[1]) / (img.shape[-1] * img.shape[-2]),
-                                                         (box2[2] - box2[0]) * (box2[3] - box2[1]) / (img.shape[-1] * img.shape[-2])])
-                spatial_features[idx1, idx2] = torch.cat((so, sp, po, area_boxes_over_img))
-            '''
-
-            # 1. Compute the union bounding box, only if rel_context is not None
-            if self.rel_context == 'relation_box':
-                # 2. Pool all the regions
-                relboxes = relboxes.view(-1, 4)
-                pooled_rel_regions = torchvision.ops.roi_align(img_f.unsqueeze(0), [relboxes], output_size=(4, 4), spatial_scale=scale)   # K x K x 256 x 4 x 4
-                # Prepare the relationship features for the concatenation
-                pooled_rel_regions = pooled_rel_regions.view(obj.size(0), obj.size(0), -1)  # K x K x 256*4*4
-            elif self.rel_context == 'whole_image':
-                raise NotImplementedError()
-                # TODO!
-            elif self.rel_context == 'image_level_labels':
-                raise NotImplementedError()
-                # TODO!
-
-            # Prepare the object features for concatenation
-            pooled_obj_regions = pooled_regions.view(pooled_regions.size(0), -1).\
-                unsqueeze(0).repeat(obj.size(0), 1, 1)   # K x K x 256*4*4
-            pooled_subj_regions = pooled_regions.view(pooled_regions.size(0), -1).\
-                unsqueeze(1).repeat(1, obj.size(0), 1)   # K x K x 256*4*4
-
-            # Handle labels
-            one_hot_obj_label = nn.functional.one_hot(l, self.num_classes).float().unsqueeze(0).repeat(obj.size(0), 1, 1) # K x K x num_classes
-            one_hot_subj_label = nn.functional.one_hot(l, self.num_classes).float().unsqueeze(1).repeat(1, obj.size(0), 1) # K x K x num_classes
-
-            # 3. Concatenate all the features
-            pooled_concat = torch.cat(
-                (
-                    pooled_obj_regions, one_hot_obj_label,
-                    pooled_subj_regions, one_hot_subj_label,
-                    spatial_features
-                ),
-                dim=2
-            )
-
-            if self.rel_context is not None:
-                # Add the information regarding the relationship context
-                pooled_concat = torch.cat(
-                    (
-                        pooled_concat, pooled_rel_regions
-                    ),
-                    dim=2
-                )
-
-            if self.training:
-                # If training, we suppress some of the relationships
-                # Hence, calculate a filter in order to control the amount of relations and non-relations seen by the architecture.
-                choosen_relation_indexes = self.choose_rel_indexes(targets[idx]['relationships'])
-                pooled_concat = pooled_concat[choosen_relation_indexes]
-            else:
-                # Reshape for passing through the classifier
-                pooled_concat = pooled_concat.view(obj.size(0) ** 2, -1)
-
-            # 4. Run the Relationship classifier
-            rel_out = self.relationships_classifier(pooled_concat)
-            if self.training:
-                t = targets[idx]['relationships'][choosen_relation_indexes]
-                rel_loss += self.rel_loss_fn(rel_out, t)
-            else:
-                inferred_rels = F.softmax(rel_out, dim=1)
-                pdb.set_trace()
-                rels_scores, rels_indexes = torch.max(inferred_rels, dim=1)
-
-                # reshape back to a square matrix
-                rels_scores = rels_scores.view(obj.size(0), obj.size(0))
-                rels_indexes = rels_indexes.view(obj.size(0), obj.size(0))
+            # Train or Infer attributes
+            if self.train_attributes:
+                out_attr = self.attributes_net(b, l, t, img_f, pooled_regions)
+                if self.training:
+                    # out_attr contains a loss value
+                    attr_loss += out_attr
+                else:
+                    # out_attr contains detections
+                    vrd_detection_dict.update(out_attr)
 
             if not self.training:
-                # accumulate VRD detections from every batch
-                vrd_detections.append({'relationships': rels_indexes, 'relationships_scores':rels_scores,
-                                       'attributes': attr_indexes, 'attributes_scores': attr_scores})
+                vrd_detections.append(vrd_detection_dict)
 
         if self.training:
             # Compute the mean losses over all detections for every batch
@@ -323,7 +364,11 @@ class VRD(nn.Module):
             attr_loss /= num_objects_total
             rel_loss /= num_objects_total ** 2
 
-            losses_dict.update({'relationships_loss': rel_loss, 'attributes_loss': attr_loss})
+            if self.train_relationships:
+                losses_dict.update({'relationships_loss': rel_loss})
+            else:
+                losses_dict.update({'attributes_loss': attr_loss})
+
             return losses_dict
 
         else:
