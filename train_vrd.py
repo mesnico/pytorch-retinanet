@@ -45,13 +45,16 @@ def main(args=None):
     parser.add_argument('--csv_train', help='Path to file containing training annotations (see readme)')
     parser.add_argument('--csv_classes', help='Path to file containing class list (see readme)')
     parser.add_argument('--csv_val', help='Path to file containing validation annotations (optional, see readme)')
-    parser.add_argument('--resume', help='Checkpoint to load')
+    parser.add_argument('--resume_attr', help='Checkpoint to load the attributes model from')
+    parser.add_argument('--resume_rel', help='Checkpoint to load the relationships from')
     parser.add_argument('--detector_snapshot', help='Detector snapshot')
 
     parser.add_argument('--depth', help='Resnet depth, must be one of 18, 34, 50, 101, 152', type=int, default=50)
     parser.add_argument('--epochs', help='Number of epochs', type=int, default=100)
     parser.add_argument('--bs', help='Batch size', type=int, default=64)
     parser.add_argument('--net', help='Network to use', default='fasterrcnn')
+    parser.add_argument('--train_rel', action='store_true', default=False, help='Enable training relationships')
+    parser.add_argument('--train_attr', action='store_true', default=False, help='Enable training attributes')
 
     parser.add_argument('--log_interval', help='Iterations before outputting stats', type=int, default=1)
     parser.add_argument('--checkpoint_interval', help='Iterations before saving an intermediate checkpoint', type=int,
@@ -59,6 +62,11 @@ def main(args=None):
     parser.add_argument('--iterations', type=int, help='Iterations for every batch', default=32)
 
     parser = parser.parse_args(args)
+
+    # asserts
+    assert args.train_rel or args.train_attr, "You have to train one of attribute or relation networks!"
+    assert not args.train_rel and args.resume_rel, "It is useless to load relationships when you do not train them!"
+    assert not args.train_attr and args.resume_attr, "It is useless to load attributes when you do not train them!"
 
     # This becomes the minibatch size
     parser.bs = parser.bs // parser.iterations
@@ -93,7 +101,13 @@ def main(args=None):
     detector = create_detection_model(dataset_train.num_classes(), parser)
 
     # Create the experiment folder
-    experiment_fld = 'vrd_experiment_{}_{}_resnet{}_{}'.format(parser.net, parser.dataset, parser.depth,
+    if args.train_attr and args.train_rel:
+        mode = 'attr-and-rel'
+    elif args.train_attr:
+        mode = 'only-attr'
+    elif args.train_rel:
+        mode = 'only-rel'
+    experiment_fld = 'vrd_{}_experiment_{}_{}_resnet{}_{}'.format(mode, parser.net, parser.dataset, parser.depth,
                                                         time.strftime("%Y%m%d%H%M%S", time.localtime()))
     experiment_fld = os.path.join('outputs', experiment_fld)
     if not os.path.exists(experiment_fld):
@@ -115,7 +129,7 @@ def main(args=None):
         print('Correctly loaded the detector checkpoint {}'.format(parser.detector_snapshot))
 
     # Create the VRD model given the detector
-    model = VRD(detector, dataset=dataset_train)
+    model = VRD(detector, dataset=dataset_train, train_relationships=args.train_rel, train_attributes=args.train_attr)
     if use_gpu:
         model = model.cuda()
         model = torch.nn.DataParallel(model).cuda()
@@ -125,14 +139,32 @@ def main(args=None):
 
     # Load checkpoint if needed
     start_epoch = 0
-    if parser.resume:
-        print('Loading checkpoint {}'.format(parser.resume))
+    # load relationships
+    if args.resume_rel:
+        print('Loading relationship checkpoint {}'.format(parser.resume_rel))
+        rel_checkpoint = torch.load(parser.resume_rel)
+        model.module.relationship_net.load_state_dict(rel_checkpoint['model_rel'])
+        if not args.resume_attr:
+            print('Resuming also scheduler and optimizer...')
+            start_epoch = rel_checkpoint['epoch']
+            optimizer.load_state_dict(rel_checkpoint['optimizer'])
+            scheduler.load_state_dict(rel_checkpoint['scheduler'])
+    if args.resume_attr:
+        print('Loading attributes checkpoint {}'.format(parser.resume_attr))
+        attr_checkpoint = torch.load(parser.resume_attr)
+        model.module.relationship_net.load_state_dict(attr_checkpoint['model_attr'])
+        if not args.resume_rel:
+            print('Resuming also scheduler and optimizer...')
+            start_epoch = attr_checkpoint['epoch']
+            optimizer.load_state_dict(attr_checkpoint['optimizer'])
+            scheduler.load_state_dict(attr_checkpoint['scheduler'])
+    if args.resume:
+        print('Loading both attributes and relationships models {}'.format(parser.resume))
         checkpoint = torch.load(parser.resume)
         start_epoch = checkpoint['epoch']
-        model.module.load_state_dict(checkpoint['model'])
         optimizer.load_state_dict(checkpoint['optimizer'])
         scheduler.load_state_dict(checkpoint['scheduler'])
-        print('Checkpoint loaded!')
+    print('Checkpoint loaded!')
 
     loss_hist = collections.deque(maxlen=500)
 
@@ -142,6 +174,8 @@ def main(args=None):
     print('Num training images: {}'.format(len(dataset_train)))
 
     for epoch_num in tqdm.trange(start_epoch, parser.epochs):
+        logger.add_scalar("learning_rate", scheduler.get_lr()[0],
+                          epoch_num * len(dataloader_train))
 
         model.train()
         # model.module.freeze_bn()
@@ -204,7 +238,8 @@ def main(args=None):
             if (minibatch_idx + 1) % (parser.checkpoint_interval * parser.iterations) == 0:
                 # Save an intermediate checkpoint
                 save_checkpoint({
-                    'model': model.module.state_dict(),
+                    'model_rel': model.module.relationship_net.state_dict() if args.train_rel else None,
+                    'model_attr': model.module.attributes_net.state_dict() if args.train_attr else None,
                     'optimizer': optimizer.state_dict(),
                     'scheduler': scheduler.state_dict(),
                     'epoch': epoch_num
@@ -213,8 +248,6 @@ def main(args=None):
             if (minibatch_idx + 1) % 5 == 0:
                 # flush cuda memory every tot iterations
                 torch.cuda.empty_cache()
-
-
 
         if parser.dataset == 'coco':
 
@@ -232,10 +265,11 @@ def main(args=None):
         scheduler.step(np.mean(epoch_loss))
 
         save_checkpoint({
-            'model': model.module.state_dict(),
+            'model_rel': model.module.relationship_net.state_dict() if args.train_rel else None,
+            'model_attr': model.module.attributes_net.state_dict() if args.train_attr else None,
             'optimizer': optimizer.state_dict(),
             'scheduler': scheduler.state_dict(),
-            'epoch': epoch_num,
+            'epoch': epoch_num
         }, experiment_fld, overwrite=False)
 
     model.eval()

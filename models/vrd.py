@@ -296,7 +296,7 @@ class VRD(nn.Module):
 
         if not self.finetune_detector:
             # detach the features from the graph so that we do not backprop through the detector
-            image_features_pooled = image_features_pooled.detach()
+            image_features_pooled = image_features_pooled.detach().clone()
 
         # iterate through batch size
         attr_loss = 0
