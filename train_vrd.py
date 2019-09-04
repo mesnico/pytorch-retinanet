@@ -45,6 +45,7 @@ def main(args=None):
     parser.add_argument('--csv_train', help='Path to file containing training annotations (see readme)')
     parser.add_argument('--csv_classes', help='Path to file containing class list (see readme)')
     parser.add_argument('--csv_val', help='Path to file containing validation annotations (optional, see readme)')
+    parser.add_argument('--resume', help='Checkpoint to load the model from')
     parser.add_argument('--resume_attr', help='Checkpoint to load the attributes model from')
     parser.add_argument('--resume_rel', help='Checkpoint to load the relationships from')
     parser.add_argument('--detector_snapshot', help='Detector snapshot')
@@ -61,12 +62,12 @@ def main(args=None):
                         default=80)
     parser.add_argument('--iterations', type=int, help='Iterations for every batch', default=32)
 
-    parser = parser.parse_args(args)
+    parser = parser.parse_args()
 
     # asserts
-    assert args.train_rel or args.train_attr, "You have to train one of attribute or relation networks!"
-    assert not args.train_rel and args.resume_rel, "It is useless to load relationships when you do not train them!"
-    assert not args.train_attr and args.resume_attr, "It is useless to load attributes when you do not train them!"
+    assert parser.train_rel or parser.train_attr, "You have to train one of attribute or relation networks!"
+    assert not (not parser.train_rel and parser.resume_rel), "It is useless to load relationships when you do not train them!"
+    assert not (not parser.train_attr and parser.resume_attr), "It is useless to load attributes when you do not train them!"
 
     # This becomes the minibatch size
     parser.bs = parser.bs // parser.iterations
@@ -101,11 +102,11 @@ def main(args=None):
     detector = create_detection_model(dataset_train.num_classes(), parser)
 
     # Create the experiment folder
-    if args.train_attr and args.train_rel:
+    if parser.train_attr and parser.train_rel:
         mode = 'attr-and-rel'
-    elif args.train_attr:
+    elif parser.train_attr:
         mode = 'only-attr'
-    elif args.train_rel:
+    elif parser.train_rel:
         mode = 'only-rel'
     experiment_fld = 'vrd_{}_experiment_{}_{}_resnet{}_{}'.format(mode, parser.net, parser.dataset, parser.depth,
                                                         time.strftime("%Y%m%d%H%M%S", time.localtime()))
@@ -129,38 +130,40 @@ def main(args=None):
         print('Correctly loaded the detector checkpoint {}'.format(parser.detector_snapshot))
 
     # Create the VRD model given the detector
-    model = VRD(detector, dataset=dataset_train, train_relationships=args.train_rel, train_attributes=args.train_attr)
+    model = VRD(detector, dataset=dataset_train, train_relationships=parser.train_rel, train_attributes=parser.train_attr)
     if use_gpu:
         model = model.cuda()
         model = torch.nn.DataParallel(model).cuda()
 
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=4)
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=5)
 
     # Load checkpoint if needed
     start_epoch = 0
     # load relationships
-    if args.resume_rel:
+    if parser.resume_rel:
         print('Loading relationship checkpoint {}'.format(parser.resume_rel))
         rel_checkpoint = torch.load(parser.resume_rel)
-        model.module.relationship_net.load_state_dict(rel_checkpoint['model_rel'])
-        if not args.resume_attr:
+        model.module.relationships_net.load_state_dict(rel_checkpoint['model_rel'])
+        if not parser.resume_attr:
             print('Resuming also scheduler and optimizer...')
             start_epoch = rel_checkpoint['epoch']
             optimizer.load_state_dict(rel_checkpoint['optimizer'])
             scheduler.load_state_dict(rel_checkpoint['scheduler'])
-    if args.resume_attr:
+    if parser.resume_attr:
         print('Loading attributes checkpoint {}'.format(parser.resume_attr))
         attr_checkpoint = torch.load(parser.resume_attr)
-        model.module.relationship_net.load_state_dict(attr_checkpoint['model_attr'])
-        if not args.resume_rel:
+        model.module.relationships_net.load_state_dict(attr_checkpoint['model_attr'])
+        if not parser.resume_rel:
             print('Resuming also scheduler and optimizer...')
             start_epoch = attr_checkpoint['epoch']
             optimizer.load_state_dict(attr_checkpoint['optimizer'])
             scheduler.load_state_dict(attr_checkpoint['scheduler'])
-    if args.resume:
+    if parser.resume:
         print('Loading both attributes and relationships models {}'.format(parser.resume))
         checkpoint = torch.load(parser.resume)
+        model.module.relationships_net.load_state_dict(checkpoint['model_rel'])
+        model.module.attributes_net.load_state_dict(checkpoint['model_attr'])
         start_epoch = checkpoint['epoch']
         optimizer.load_state_dict(checkpoint['optimizer'])
         scheduler.load_state_dict(checkpoint['scheduler'])
@@ -238,8 +241,8 @@ def main(args=None):
             if (minibatch_idx + 1) % (parser.checkpoint_interval * parser.iterations) == 0:
                 # Save an intermediate checkpoint
                 save_checkpoint({
-                    'model_rel': model.module.relationship_net.state_dict() if args.train_rel else None,
-                    'model_attr': model.module.attributes_net.state_dict() if args.train_attr else None,
+                    'model_rel': model.module.relationships_net.state_dict() if parser.train_rel else None,
+                    'model_attr': model.module.attributes_net.state_dict() if parser.train_attr else None,
                     'optimizer': optimizer.state_dict(),
                     'scheduler': scheduler.state_dict(),
                     'epoch': epoch_num
@@ -265,8 +268,8 @@ def main(args=None):
         scheduler.step(np.mean(epoch_loss))
 
         save_checkpoint({
-            'model_rel': model.module.relationship_net.state_dict() if args.train_rel else None,
-            'model_attr': model.module.attributes_net.state_dict() if args.train_attr else None,
+            'model_rel': model.module.relationships_net.state_dict() if parser.train_rel else None,
+            'model_attr': model.module.attributes_net.state_dict() if parser.train_attr else None,
             'optimizer': optimizer.state_dict(),
             'scheduler': scheduler.state_dict(),
             'epoch': epoch_num

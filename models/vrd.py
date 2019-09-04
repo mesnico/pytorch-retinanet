@@ -16,6 +16,8 @@ class RelationshipsModel(nn.Module):
         super().__init__()
 
         self.num_relationships = dataset.num_relationships()
+        self.num_classes = dataset.num_classes()
+        self.rel_context = rel_context
         if rel_context == 'relation_box':
             input_size = 4 * 4 * 256 * 3 + 2 * self.num_classes
         elif rel_context == 'whole_image':
@@ -92,7 +94,7 @@ class RelationshipsModel(nn.Module):
 
         return chosen > 0
 
-    def forward(self, boxes, labels, targets, img_features, pooled_regions, scale):
+    def forward(self, boxes, labels, targets, img_features, pooled_regions, img_shape, scale):
         # Infer the relationships between objects
 
         # Pseudo-code:
@@ -113,7 +115,7 @@ class RelationshipsModel(nn.Module):
         box1box2_perm_feats = self.spatial_features(box1box2_perm)  # K x K x 4
         so_feats = box1box2_perm_feats[:, :, :-2]  # K x K x 2, exclude areas
         area_boxes_over_img = box1box2_perm_feats[:, :, -2:] / (
-                    img.shape[-1] * img.shape[-2])  # take only the areas and normalize with respect to frame
+                    img_shape[0] * img_shape[1])  # take only the areas and normalize with respect to frame
         sp_feats = self.spatial_features(box1relboxes_perm)[:, :, :-2]  # K x K x 4
         po_feats = self.spatial_features(relboxesbox2_perm)[:, :, :-2]  # K x K x 4
 
@@ -129,6 +131,7 @@ class RelationshipsModel(nn.Module):
             pooled_rel_regions = pooled_rel_regions.view(boxes.size(0), boxes.size(0), -1)  # K x K x 256*4*4
         elif self.rel_context == 'whole_image':
             raise NotImplementedError()
+            # self.avgpool(img_features)
             # TODO!
         elif self.rel_context == 'image_level_labels':
             raise NotImplementedError()
@@ -177,7 +180,7 @@ class RelationshipsModel(nn.Module):
         # 4. Run the Relationship classifier
         rel_out = self.relationships_classifier(pooled_concat)
         if self.training:
-            t = targets[idx]['relationships'][choosen_relation_indexes]
+            t = targets['relationships'][choosen_relation_indexes]
             rel_loss = self.rel_loss_fn(rel_out, t)
             return rel_loss
         else:
@@ -195,6 +198,7 @@ class AttributesModel(nn.Module):
     def __init__(self, dataset):
         super().__init__()
         self.num_attributes = dataset.num_attributes()
+        self.num_classes = dataset.num_classes()
         self.attributes_classifier = nn.Sequential(
             nn.Linear(4 * 4 * 256 * 2 + self.num_classes, 4096),
             nn.ReLU(),
@@ -205,15 +209,18 @@ class AttributesModel(nn.Module):
             nn.Linear(4096, self.num_attributes),
         )
         self.attr_loss_fn = nn.MultiLabelSoftMarginLoss(reduction='sum')  # multi-label classification problem
+        self.avgpool = nn.AdaptiveAvgPool2d((4, 4))
 
     def forward(self, boxes, labels, targets, img_features, pooled_regions):
         # Infer the attributes for every object in the images
 
+        # Compute global image features
+        img_features_pooled = self.avgpool(img_features)
         # 1. Concatenate image_features, pooled_regions and labels
         attr_features = torch.cat(
             (
                 pooled_regions.view(pooled_regions.size(0), -1),  # K x (256*4*4)
-                img_features.view(-1).unsqueeze(0).expand(boxes.size(0), -1),
+                img_features_pooled.view(-1).unsqueeze(0).expand(boxes.size(0), -1),
                 # concatenate image level features to all the regions  K x (256*4*4)
                 nn.functional.one_hot(labels, self.num_classes).float()  # K x num_classes
             ),
@@ -253,8 +260,6 @@ class VRD(nn.Module):
         if train_attributes:
             self.attributes_net = AttributesModel(dataset)
 
-        self.avgpool = nn.AdaptiveAvgPool2d((4, 4))
-
     def train(self, mode=True):
         self.detector.train(mode)
         return super().train(mode)
@@ -291,17 +296,16 @@ class VRD(nn.Module):
             # transform images and targets to match the ones processed by the detector
             images, targets = self.detector.transform(images, targets)
 
-        # image_features = self.detector.backbone(images.tensors)[3]
-        image_features_pooled = self.avgpool(self.detector.backbone(images.tensors)['pool'])
+        image_features = self.detector.backbone(images.tensors)[3]
 
         if not self.finetune_detector:
             # detach the features from the graph so that we do not backprop through the detector
-            image_features_pooled = image_features_pooled.detach().clone()
+            image_features = image_features.detach().clone()
 
         # iterate through batch size
         attr_loss = 0
         rel_loss = 0
-        for idx, (img, img_f, b, l) in enumerate(zip(images.tensors, image_features_pooled, boxes, labels)):
+        for idx, (img, img_f, b, l) in enumerate(zip(images.tensors, image_features, boxes, labels)):
             # if evaluating and no objects are detected, return empty tensors
             if not self.training and b.shape[0] == 0:
                 dummy_tensor = torch.FloatTensor([[0]])
@@ -337,7 +341,7 @@ class VRD(nn.Module):
 
             # Train or Infer relationships
             if self.train_relationships:
-                out_rel = self.relationships_net(b, l, t, img_f, pooled_regions, scale)
+                out_rel = self.relationships_net(b, l, t, img_f, pooled_regions, img.shape[-2:], scale)
                 if self.training:
                     # out_rel contains a loss value
                     rel_loss += out_rel
@@ -366,7 +370,7 @@ class VRD(nn.Module):
 
             if self.train_relationships:
                 losses_dict.update({'relationships_loss': rel_loss})
-            else:
+            if self.train_attributes:
                 losses_dict.update({'attributes_loss': attr_loss})
 
             return losses_dict
