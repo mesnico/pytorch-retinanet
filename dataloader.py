@@ -83,11 +83,19 @@ class AspectRatioBasedSampler(Sampler):
 
 class BalancedSampler(Sampler):
 
-    def __init__(self, data_source, batch_size, drop_last):
+    def __init__(self, data_source, batch_size, train_rel=False, train_attr=False):
+        assert not (train_rel and train_attr), 'Cannot balance both relationships and attributes'
         self.data_source = data_source
         self.batch_size = batch_size
-        self.drop_last = drop_last
-        self.class_freq_dict = self.data_source.build_class_frequencies()
+        if not (train_attr or train_rel):
+            self.class_freq_dict = self.data_source.build_class_frequencies()
+            self.num_classes = self.data_source.num_classes()
+        elif train_rel:
+            self.class_freq_dict = self.data_source.build_relationships_frequencies()
+            self.num_classes = self.data_source.num_relationships()
+        elif train_attr:
+            self.class_freq_dict = self.data_source.build_attributes_frequencies()
+            self.num_classes = self.data_source.num_attributes()
         self.groups = self.group_images()
 
     def __iter__(self):
@@ -96,14 +104,11 @@ class BalancedSampler(Sampler):
             yield group
 
     def __len__(self):
-        if self.drop_last:
-            return len(self.data_source) // self.batch_size
-        else:
-            return (len(self.data_source) + self.batch_size - 1) // self.batch_size
+        return len(self.groups)
 
     def group_images(self):
         order = []
-        images_per_class = len(self.data_source) // self.data_source.num_classes()
+        images_per_class = len(self.data_source) // self.num_classes
         for cl, img_set in self.class_freq_dict.items():
             if len(img_set) >= images_per_class:
                 # pick random images from this class

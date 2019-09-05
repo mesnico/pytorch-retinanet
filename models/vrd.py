@@ -38,7 +38,7 @@ class RelationshipsModel(nn.Module):
             nn.Linear(4096, self.num_relationships),
         )
 
-        self.rel_loss_fn = nn.CrossEntropyLoss(reduction='sum')    # standard classification problem
+        self.rel_loss_fn = nn.CrossEntropyLoss()    # standard classification problem
         # self.rel_loss_fn = FocalLoss(num_classes=self.num_relationships, reduction='sum')
 
     def bbox_union(self, boxes_perm, padding=0):
@@ -208,7 +208,7 @@ class AttributesModel(nn.Module):
             nn.Dropout(),
             nn.Linear(4096, self.num_attributes),
         )
-        self.attr_loss_fn = nn.MultiLabelSoftMarginLoss(reduction='sum')  # multi-label classification problem
+        self.attr_loss_fn = nn.MultiLabelSoftMarginLoss()  # multi-label classification problem
         self.avgpool = nn.AdaptiveAvgPool2d((4, 4))
 
     def forward(self, boxes, labels, targets, img_features, pooled_regions):
@@ -324,7 +324,7 @@ class VRD(nn.Module):
                 targets[idx]['labels'] =  targets[idx]['labels'][:limit]
                 targets[idx]['relationships'] = targets[idx]['relationships'][:limit, :limit]
                 targets[idx]['attributes'] = targets[idx]['attributes'][:limit, :]
-                print('Skipping... too many objects ({})'.format(how_many))
+                # print('Skipping... too many objects ({})'.format(how_many))
 
             # compute the scale factor between the image dimensions and the feature map dimension
             scale_factor = np.array(img_f.shape[-2:]) / np.array(img.shape[-2:])
@@ -364,9 +364,9 @@ class VRD(nn.Module):
 
         if self.training:
             # Compute the mean losses over all detections for every batch
-            num_objects_total = sum([t['boxes'].size(0) for t in targets])
-            attr_loss /= num_objects_total
-            rel_loss /= num_objects_total ** 2
+            #num_objects_total = sum([t['boxes'].size(0) for t in targets])
+            attr_loss /= len(images.tensors)
+            rel_loss /= len(images.tensors)
 
             if self.train_relationships:
                 losses_dict.update({'relationships_loss': rel_loss})

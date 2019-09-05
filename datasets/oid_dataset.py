@@ -97,6 +97,9 @@ def get_attribute_relationships_labels(metadata_dir, version='v5'):
                 if len(row):
                     label = row[0]
                     description = row[1].replace("\"", "").replace("'", "").replace('`', '')
+                    if description == 'is':
+                        # 'is' is not a real relationship
+                        continue
 
                     rel_id_to_labels_idx[i] = label
                     rel_id_to_labels[i] = description
@@ -695,17 +698,30 @@ class OidDatasetVRD(Dataset):
         height, width = img_annotations['h'], img_annotations['w']
         return float(width) / float(height)
 
-    # used for balanced sampler
-    def build_class_frequencies(self):
+    def build_relationships_frequencies(self):
         freq = {}
         idxs = list(range(len(self)))
         for idx in tqdm.tqdm(idxs):
             ann = self.annotations[self.id_to_image_id[idx]]
-            classes = [v['cls_id'] for v in ann['boxes']]
-            for c in classes:
-                if c not in freq:
-                    freq[c] = set()
-                freq[c].add(idx)
+            relationships = ann['relationships'].toarray().reshape(-1)
+            for r in relationships:
+                if r not in freq:
+                    freq[r] = set()
+                freq[r].add(idx)
+        # the 0 index does not care at this point, delete
+        del freq[0]
+        return freq
+
+    def build_attributes_frequencies(self):
+        freq = {}
+        idxs = list(range(len(self)))
+        for idx in tqdm.tqdm(idxs):
+            ann = self.annotations[self.id_to_image_id[idx]]
+            _, attributes = np.nonzero(ann['attributes'].toarray())
+            for a in attributes:
+                if a not in freq:
+                    freq[a] = set()
+                freq[a].add(idx)
         return freq
 
     def num_classes(self):
@@ -803,7 +819,9 @@ if __name__ == '__main__':
     imgs_with_no_rels = 0
     imgs_with_no_attrs = 0
     imgs_with_no_attrs_rels = 0
-    for idx, (_, target) in enumerate(tqdm.tqdm(dataloader_train)):
+
+    ### Calculate some stats
+    '''for idx, (_, target) in enumerate(tqdm.tqdm(dataloader_train)):
         # calculate some vrd stat
         na = False
         nr = False
@@ -827,7 +845,18 @@ if __name__ == '__main__':
     print('Attributes frequencies: {}'.format(Counter(attr_list)))
     print('Num images with no attributes: {}'.format(imgs_with_no_attrs))
     print('Num images with no relationships: {}'.format(imgs_with_no_rels))
-    print('Num images with both no attributes and relationships: {}'.format(imgs_with_no_attrs_rels))
+    print('Num images with both no attributes and relationships: {}'.format(imgs_with_no_attrs_rels))'''
+
+    ### Test frequencies methods
+    print('Attributes Frequencies')
+    freq = dataset_train.build_attributes_frequencies()
+    for k,v in freq.items():
+        print('{}: {}'.format(k, len(v)))
+
+    print('Relationships Frequencies')
+    freq = dataset_train.build_relationships_frequencies()
+    for k, v in freq.items():
+        print('{}: {}'.format(k, len(v)))
 
 
 

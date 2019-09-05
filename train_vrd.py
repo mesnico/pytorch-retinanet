@@ -91,7 +91,11 @@ def main(args=None):
     else:
         raise ValueError('Dataset type not understood (must be csv or coco), exiting.')
 
-    # sampler = BalancedSampler(dataset_train, batch_size=parser.bs, drop_last=False)
+    # if training one of relationships or attributes, balance!
+    if not (parser.train_attr and parser.train_rel):
+        print('Dataloader is using the BalancedSampler!')
+        sampler_val = BalancedSampler(dataset_train, batch_size=parser.bs, train_rel=parser.train_rel, train_attr=parser.train_attr)
+        dataloader_train = DataLoader(dataset_val, num_workers=8, collate_fn=collate_fn, batch_sampler=sampler_val)
     dataloader_train = DataLoader(dataset_train, num_workers=8, batch_size=parser.bs, collate_fn=collate_fn, shuffle=True)
 
     # if dataset_val is not None:
