@@ -140,7 +140,7 @@ def main(args=None):
         model = torch.nn.DataParallel(model).cuda()
 
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=5)
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=13)
 
     # Load checkpoint if needed
     start_epoch = 0
@@ -181,7 +181,7 @@ def main(args=None):
     print('Num training images: {}'.format(len(dataset_train)))
 
     for epoch_num in tqdm.trange(start_epoch, parser.epochs):
-        logger.add_scalar("learning_rate", scheduler.get_lr()[0],
+        logger.add_scalar("learning_rate", optimizer.param_groups[0]['lr'],
                           epoch_num * len(dataloader_train))
 
         model.train()
@@ -269,7 +269,7 @@ def main(args=None):
             mAP = csv_eval.evaluate(dataset_val, model)
 
         # TODO: write evaluation code for openimages
-        scheduler.step(np.mean(epoch_loss))
+        scheduler.step()
 
         save_checkpoint({
             'model_rel': model.module.relationships_net.state_dict() if parser.train_rel else None,

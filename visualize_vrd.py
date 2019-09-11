@@ -24,7 +24,7 @@ from models.vrd import VRD
 # assert torch.__version__.split('.')[1] == '4'
 thres = 0.5
 rel_thresh = 0.5
-attr_thresh = 0.5
+attr_thresh = 0.2
 
 use_gpu = False
 
@@ -42,7 +42,9 @@ def main(args=None):
     parser.add_argument('--csv_val', help='Path to file containing validation annotations (optional, see readme)')
     parser.add_argument('--net', help='Network to use', default='fasterrcnn')
 
-    parser.add_argument('--model', help='Path to model (.pt) file.')
+    parser.add_argument('--model_rel', help='Path to model (.pt) file for relationships.', default=None)
+    parser.add_argument('--model_attr', help='Path to model (.pt) file for attributes.', default=None)
+    parser.add_argument('--model_detector', help='Path to model (.pt) file for the detector.')
     parser.add_argument('--depth', help='Resnet depth, must be one of 18, 34, 50, 101, 152', type=int, default=50)
 
     parser = parser.parse_args(args)
@@ -58,12 +60,30 @@ def main(args=None):
 
     # Create the model
     detector = create_detection_model(dataset_val.num_classes(), parser, box_score_thresh=thres)
-    model = VRD(detector, dataset=dataset_val)
+    model = VRD(detector, dataset=dataset_val, train_relationships=parser.model_rel is not None, 
+                train_attributes=parser.model_attr is not None)
 
-    checkpoint = torch.load(parser.model, map_location=lambda storage, loc: storage)
+    # Load the detector
+    checkpoint = torch.load(parser.model_detector, map_location=lambda storage, loc: storage)
     weights = checkpoint['model']
     weights = {k.replace('module.', ''): v for k, v in weights.items()}
-    model.load_state_dict(weights)
+    model.detector.load_state_dict(weights)
+    print('Detector correctly loaded!')
+
+    # Load the attributes, if needed
+    if parser.model_rel:
+        checkpoint = torch.load(parser.model_rel, map_location=lambda storage, loc: storage)
+        weights = checkpoint['model_rel']
+        weights = {k.replace('module.', ''): v for k, v in weights.items()}
+        model.relationships_net.load_state_dict(weights)
+        print('Relationships correctly loaded!')
+
+    if parser.model_attr:
+        checkpoint = torch.load(parser.model_attr, map_location=lambda storage, loc: storage)
+        weights = checkpoint['model_attr']
+        weights = {k.replace('module.', ''): v for k, v in weights.items()}
+        model.attributes_net.load_state_dict(weights)
+        print('Attributes correctly loaded!')
 
     if use_gpu:
         model = model.cuda()
@@ -100,10 +120,12 @@ def main(args=None):
             scores = output['scores']
             classification = output['labels']
             boxes = output['boxes']
-            relationships = output['relationships']
-            rel_scores = output['relationships_scores']
-            attributes = output['attributes']
-            attr_scores = output['attributes_scores']
+            if parser.model_rel:
+                relationships = output['relationships']
+                rel_scores = output['relationships_scores']
+            if parser.model_attr:
+                attributes = output['attributes']
+                attr_scores = output['attributes_scores']
             # from here, interface to the code already written in the original repo
 
             print('Elapsed time: {}'.format(time.time() - st))
@@ -134,21 +156,22 @@ def main(args=None):
             # Draw objects
             for j in range(boxes.shape[0]):
                 bbox = boxes[j, :4].int()
-                attr = attributes[j, 0].item() if attr_scores[j, 0] > attr_thresh else 0      # TODO: only the top rank attribute is considered, generalize better!
+                attr = attributes[j, 0].item() if parser.model_attr is not None and attr_scores[j, 0] > attr_thresh else 0      # TODO: only the top rank attribute is considered, generalize better!
                 label_name = dataset_val.labels[int(classification[j])]
                 attr_name = ': ' + dataset_val.attr_id_to_labels[attr] if attr != 0 else ''
                 draw_object_bb(img, bbox, label_name + attr_name)
                 print('Detection: '+label_name)
 
             # Draw relationships
-            for s_ind in range(relationships.shape[0]):
-                for o_ind in range(relationships.shape[1]):
-                    subj = boxes[s_ind, :4].int()
-                    obj = boxes[o_ind, :4].int()
-                    rel = relationships[s_ind, o_ind].item() if rel_scores[s_ind, o_ind] > rel_thresh else 0
-                    if rel != 0:
-                        rel_name = dataset_val.rel_id_to_labels[rel]
-                        draw_relationship(img, subj, obj, rel_name)
+            if parser.model_rel:
+                for s_ind in range(relationships.shape[0]):
+                    for o_ind in range(relationships.shape[1]):
+                        subj = boxes[s_ind, :4].int()
+                        obj = boxes[o_ind, :4].int()
+                        rel = relationships[s_ind, o_ind].item() if rel_scores[s_ind, o_ind] > rel_thresh else 0
+                        if rel != 0:
+                            rel_name = dataset_val.rel_id_to_labels[rel]
+                            draw_relationship(img, subj, obj, rel_name)
 
             cv2.imshow('img', img)
             cv2.waitKey(0)
