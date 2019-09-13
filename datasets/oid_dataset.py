@@ -737,7 +737,7 @@ class OidDatasetVRD(Dataset):
         """
         Evaluates detections and put the results in a file into outdir
 
-        :param all_detections: list[image_index, list[boxes], list[labels]]
+        :param all_detections: list[image_index, list[subj_boxes], list[subj_labels], list[obj_boxes], list[obj_labels], list[rel_labels], list[rel_scores]]
         :param output_dir: file where detection results will be stored
         :param file_identifier: optionally, a identifier for the file
         :return: optionally, a dictionary of metrics
@@ -745,6 +745,7 @@ class OidDatasetVRD(Dataset):
         """
 
         # MODE 1 (python evaluation)
+        '''
         det_dict = {
             'ImageID': [],
             'XMin': [],
@@ -772,22 +773,30 @@ class OidDatasetVRD(Dataset):
         out_filename = os.path.join(output_dir, 'detections_{}.csv'.format(file_identifier))
         df.to_csv(out_filename, index=False, float_format='%.6f')
 
+        '''
         # MODE 2 (challenge)
 
         predictions = []
-
-        for image_index, boxes, labels, scores in all_detections:
+        # handle attributes
+        for image_index, s_boxes, s_labels, o_boxes, o_labels, r_labels, r_scores in all_detections:
             detections = []
             img_annotations = self.annotations[self.id_to_image_id[image_index]]
-            for box, label, score in zip(boxes, labels, scores):
+
+            for s_box, s_label, o_box, o_label, r_label, r_score in zip(s_boxes, s_labels, o_boxes, o_labels, r_labels, r_scores):
                 # add this detection to the dict
-                det_str = "{} {:f} {:f} {:f} {:f} {:f}".format(
-                    self.id_to_labels_idx[label],
-                    score,
-                    np.clip(box[0] / img_annotations['w'], 0, 1),
-                    np.clip(box[1] / img_annotations['h'], 0, 1),
-                    np.clip(box[2] / img_annotations['w'], 0, 1),
-                    np.clip(box[3] / img_annotations['h'], 0, 1)
+                det_str = "{:f} {} {:f} {:f} {:f} {:f} {} {:f} {:f} {:f} {:f} {}".format(
+                    r_score,
+                    self.id_to_labels_idx[s_label],
+                    np.clip(s_box[0] / img_annotations['w'], 0, 1),
+                    np.clip(s_box[1] / img_annotations['h'], 0, 1),
+                    np.clip(s_box[2] / img_annotations['w'], 0, 1),
+                    np.clip(s_box[3] / img_annotations['h'], 0, 1),
+                    self.id_to_labels_idx[o_label] if r_labels is not -1 else self.attr_id_to_labels_idx[o_label],
+                    np.clip(o_box[0] / img_annotations['w'], 0, 1),
+                    np.clip(o_box[1] / img_annotations['h'], 0, 1),
+                    np.clip(o_box[2] / img_annotations['w'], 0, 1),
+                    np.clip(o_box[3] / img_annotations['h'], 0, 1),
+                    self.rel_to_labels_idx[r_label] if r_label is not -1 else 'is'
                 )
                 detections.append(det_str)
 

@@ -240,7 +240,7 @@ class AttributesModel(nn.Module):
 
 class VRD(nn.Module):
     def __init__(self, detector, dataset, finetune_detector=False, train_relationships=True,
-                 train_attributes=True, rel_context='relation_box'):
+                 train_attributes=True, rel_context='relation_box', max_objects=80):
         super(VRD, self).__init__()
 
         # asserts
@@ -254,6 +254,7 @@ class VRD(nn.Module):
         self.rel_context = rel_context
         self.train_relationships = train_relationships
         self.train_attributes = train_attributes
+        self.max_objects = max_objects
 
         if train_relationships:
             self.relationships_net = RelationshipsModel(dataset, rel_context)
@@ -316,14 +317,15 @@ class VRD(nn.Module):
                 break
 
             # Hard limit detected objects
-            limit = 80
+            limit = self.max_objects
             how_many = b.size(0)
             if how_many > limit:
                 b = b[:limit]
                 l = l[:limit]
-                targets[idx]['labels'] =  targets[idx]['labels'][:limit]
-                targets[idx]['relationships'] = targets[idx]['relationships'][:limit, :limit]
-                targets[idx]['attributes'] = targets[idx]['attributes'][:limit, :]
+                if targets is not None:
+                    targets[idx]['labels'] =  targets[idx]['labels'][:limit]
+                    targets[idx]['relationships'] = targets[idx]['relationships'][:limit, :limit]
+                    targets[idx]['attributes'] = targets[idx]['attributes'][:limit, :]
                 # print('Skipping... too many objects ({})'.format(how_many))
 
             # compute the scale factor between the image dimensions and the feature map dimension
