@@ -22,11 +22,11 @@ from models.create_model import create_detection_model
 from models.vrd import VRD
 
 # assert torch.__version__.split('.')[1] == '4'
-thres = 0.5
+thres = 0.4
 rel_thresh = 0.5
 attr_thresh = 0.2
 
-use_gpu = False
+use_gpu = True
 
 if not use_gpu:
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
@@ -41,6 +41,7 @@ def main(args=None):
     parser.add_argument('--csv_classes', help='Path to file containing class list (see readme)')
     parser.add_argument('--csv_val', help='Path to file containing validation annotations (optional, see readme)')
     parser.add_argument('--net', help='Network to use', default='fasterrcnn')
+    parser.add_argument('--set', help='Set on which evaluation will be performed', default='validation')
 
     parser.add_argument('--model_rel', help='Path to model (.pt) file for relationships.', default=None)
     parser.add_argument('--model_attr', help='Path to model (.pt) file for attributes.', default=None)
@@ -50,7 +51,7 @@ def main(args=None):
     parser = parser.parse_args(args)
 
     if parser.dataset == 'openimages':
-        dataset_val = OidDatasetVRD(parser.data_path, subset='validation',
+        dataset_val = OidDatasetVRD(parser.data_path, subset=parser.set,
                                     transform=Compose([ToTensor()]))
     else:
         raise ValueError('Dataset type not understood (must be csv or coco), exiting.')
@@ -152,26 +153,27 @@ def main(args=None):
                 cv2.rectangle(img, (x1, y1), (x2, y2), color=(0, 255, 0), thickness=1)
                 print('GT: '+label_name)
             '''
+            if len(boxes) != 0:
 
-            # Draw objects
-            for j in range(boxes.shape[0]):
-                bbox = boxes[j, :4].int()
-                attr = attributes[j, 0].item() if parser.model_attr is not None and attr_scores[j, 0] > attr_thresh else 0      # TODO: only the top rank attribute is considered, generalize better!
-                label_name = dataset_val.labels[int(classification[j])]
-                attr_name = ': ' + dataset_val.attr_id_to_labels[attr] if attr != 0 else ''
-                draw_object_bb(img, bbox, label_name + attr_name)
-                print('Detection: '+label_name)
+                # Draw objects
+                for j in range(boxes.shape[0]):
+                    bbox = boxes[j, :4].int()
+                    attr = attributes[j, 0].item() if parser.model_attr is not None and attr_scores[j, 0] > attr_thresh else 0      # TODO: only the top rank attribute is considered, generalize better!
+                    label_name = dataset_val.labels[int(classification[j])]
+                    attr_name = ': ' + dataset_val.attr_id_to_labels[attr] if attr != 0 else ''
+                    draw_object_bb(img, bbox, label_name + attr_name)
+                    print('Detection: '+label_name)
 
-            # Draw relationships
-            if parser.model_rel:
-                for s_ind in range(relationships.shape[0]):
-                    for o_ind in range(relationships.shape[1]):
-                        subj = boxes[s_ind, :4].int()
-                        obj = boxes[o_ind, :4].int()
-                        rel = relationships[s_ind, o_ind].item() if rel_scores[s_ind, o_ind] > rel_thresh else 0
-                        if rel != 0:
-                            rel_name = dataset_val.rel_id_to_labels[rel]
-                            draw_relationship(img, subj, obj, rel_name)
+                # Draw relationships
+                if parser.model_rel:
+                    for s_ind in range(relationships.shape[0]):
+                        for o_ind in range(relationships.shape[1]):
+                            subj = boxes[s_ind, :4].int()
+                            obj = boxes[o_ind, :4].int()
+                            rel = relationships[s_ind, o_ind].item() if rel_scores[s_ind, o_ind] > rel_thresh else 0
+                            if rel != 0:
+                                rel_name = dataset_val.rel_id_to_labels[rel]
+                                draw_relationship(img, subj, obj, rel_name)
 
             cv2.imshow('img', img)
             cv2.waitKey(0)

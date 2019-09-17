@@ -38,7 +38,8 @@ class RelationshipsModel(nn.Module):
             nn.Linear(4096, self.num_relationships),
         )
 
-        self.rel_loss_fn = nn.CrossEntropyLoss()    # standard classification problem
+        self.rel_class_loss_fn = nn.CrossEntropyLoss(ignore_index=0)    # standard classification problem
+        self.rel_relationshipness_loss_fn = FocalLoss()
         # self.rel_loss_fn = FocalLoss(num_classes=self.num_relationships, reduction='sum')
 
     def bbox_union(self, boxes_perm, padding=0):
@@ -181,15 +182,19 @@ class RelationshipsModel(nn.Module):
         rel_out = self.relationships_classifier(pooled_concat)
         if self.training:
             t = targets['relationships'][choosen_relation_indexes]
-            rel_loss = self.rel_loss_fn(rel_out, t)
-            return rel_loss
+            rel_class_loss = self.rel_class_loss_fn(rel_out, t)
+            rel_relationshipness_loss = self.rel_relationshipness_loss_fn(rel_out[:, 0], (t > 0).float())
+
+            return rel_class_loss, rel_relationshipness_loss
         else:
-            inferred_rels = F.softmax(rel_out, dim=1)
-            rels_scores, rels_indexes = torch.max(inferred_rels, dim=1)
+            inferred_rels = F.softmax(rel_out[:, 1:], dim=1)
+            _, rels_indexes = torch.max(inferred_rels, dim=1)
+            rels_scores = torch.sigmoid(rel_out[:, 0])  # the relationshipness is considered as score
 
             # reshape back to a square matrix
             rels_scores = rels_scores.view(boxes.size(0), boxes.size(0))
             rels_indexes = rels_indexes.view(boxes.size(0), boxes.size(0))
+            rels_indexes += 1   # since the index 0 is the null relationship
 
             return {'relationships': rels_indexes, 'relationships_scores': rels_scores}
 
@@ -240,7 +245,7 @@ class AttributesModel(nn.Module):
 
 class VRD(nn.Module):
     def __init__(self, detector, dataset, finetune_detector=False, train_relationships=True,
-                 train_attributes=True, rel_context='relation_box', max_objects=80):
+                 train_attributes=True, rel_context='relation_box', max_objects=80, lam=0.3):
         super(VRD, self).__init__()
 
         # asserts
@@ -255,6 +260,7 @@ class VRD(nn.Module):
         self.train_relationships = train_relationships
         self.train_attributes = train_attributes
         self.max_objects = max_objects
+        self.lam = lam
 
         if train_relationships:
             self.relationships_net = RelationshipsModel(dataset, rel_context)
@@ -305,7 +311,8 @@ class VRD(nn.Module):
 
         # iterate through batch size
         attr_loss = 0
-        rel_loss = 0
+        rel_class_loss = 0
+        rel_relationshipness_loss = 0
         for idx, (img, img_f, b, l) in enumerate(zip(images.tensors, image_features, boxes, labels)):
             # if evaluating and no objects are detected, return empty tensors
             if not self.training and b.shape[0] == 0:
@@ -346,7 +353,8 @@ class VRD(nn.Module):
                 out_rel = self.relationships_net(b, l, t, img_f, pooled_regions, img.shape[-2:], scale)
                 if self.training:
                     # out_rel contains a loss value
-                    rel_loss += out_rel
+                    rel_class_loss += out_rel[0]
+                    rel_relationshipness_loss += out_rel[1]
                 else:
                     # out_rel contains detections
                     vrd_detection_dict = out_rel
@@ -368,10 +376,12 @@ class VRD(nn.Module):
             # Compute the mean losses over all detections for every batch
             #num_objects_total = sum([t['boxes'].size(0) for t in targets])
             attr_loss /= len(images.tensors)
-            rel_loss /= len(images.tensors)
+            rel_class_loss /= len(images.tensors)
+            rel_relationshipness_loss /= len(images.tensors)
 
             if self.train_relationships:
-                losses_dict.update({'relationships_loss': rel_loss})
+                losses_dict.update({'relationships_class_loss': self.lam * rel_class_loss})
+                losses_dict.update({'relationshipness_loss': rel_relationshipness_loss})
             if self.train_attributes:
                 losses_dict.update({'attributes_loss': attr_loss})
 
