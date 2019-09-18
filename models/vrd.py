@@ -11,7 +11,7 @@ from models.focal_loss import FocalLoss
 import pdb
 
 
-class RelationshipsModel(nn.Module):
+class RelationshipsModelBase(nn.Module):
     def __init__(self, dataset, rel_context='relation_box', use_labels=False):
         super().__init__()
 
@@ -21,28 +21,9 @@ class RelationshipsModel(nn.Module):
         self.use_labels = use_labels
         print('Use labels: {}'.format(use_labels))
 
-        if rel_context == 'relation_box':
-            input_size = 4 * 4 * 256 * 3 + 2 * self.num_classes * use_labels
-        elif rel_context == 'whole_image':
-            input_size = 4 * 4 * 256 * 3 + 2 * self.num_classes * use_labels
-        elif rel_context == 'image_level_labels':
-            input_size = 4 * 4 * 256 * 2 + 3 * self.num_classes * use_labels
-        elif rel_context is None:
-            input_size = 4 * 4 * 256 * 2 + 2 * self.num_classes * use_labels
-        # add spatial feature
-        input_size += 14
-        self.relationships_classifier = nn.Sequential(
-            nn.Linear(input_size, 4096),
-            nn.ReLU(),
-            nn.Dropout(),
-            nn.Linear(4096, 4096),
-            nn.ReLU(),
-            nn.Dropout(),
-            nn.Linear(4096, self.num_relationships),
-        )
-
         self.rel_class_loss_fn = nn.CrossEntropyLoss(ignore_index=0)    # standard classification problem
-        self.rel_relationshipness_loss_fn = FocalLoss()
+        # self.rel_relationshipness_loss_fn = FocalLoss()
+        self.rel_relationshipness_loss_fn = nn.BCEWithLogitsLoss()
         # self.rel_loss_fn = FocalLoss(num_classes=self.num_relationships, reduction='sum')
 
     def bbox_union(self, boxes_perm, padding=0):
@@ -140,15 +121,15 @@ class RelationshipsModel(nn.Module):
         elif self.rel_context == 'image_level_labels':
             raise NotImplementedError()
             # TODO!
+        else:
+            pooled_rel_regions = None
 
         # Prepare the object features for concatenation
         pooled_obj_regions = pooled_regions.view(pooled_regions.size(0), -1). \
             unsqueeze(0).repeat(boxes.size(0), 1, 1)  # K x K x 256*4*4
         pooled_subj_regions = pooled_regions.view(pooled_regions.size(0), -1). \
             unsqueeze(1).repeat(1, boxes.size(0), 1)  # K x K x 256*4*4
-
-        # 3. Concatenate all the features
-        pooled_concat = torch.cat((pooled_obj_regions, pooled_subj_regions, spatial_features), dim=2)
+        pooled_subj_obj_regions = torch.cat((pooled_subj_regions, pooled_obj_regions), dim=2)
 
         if self.use_labels:
             # Handle labels
@@ -158,23 +139,21 @@ class RelationshipsModel(nn.Module):
             one_hot_subj_label = nn.functional.one_hot(labels, self.num_classes).float().unsqueeze(1).repeat(1,
                                                                                                              boxes.size(0),
                                                                                                              1)  # K x K x num_classes
-            pooled_concat = torch.cat((pooled_concat, one_hot_obj_label, one_hot_subj_label), dim=2)
-
-        if self.rel_context is not None:
-            # Add the information regarding the relationship context
-            pooled_concat = torch.cat((pooled_concat, pooled_rel_regions), dim=2)
+            one_hot_subj_obj_label = torch.cat((one_hot_subj_label, one_hot_obj_label), dim=2)
+        else:
+            one_hot_subj_obj_label = None
 
         if self.training:
             # If training, we suppress some of the relationships
             # Hence, calculate a filter in order to control the amount of relations and non-relations seen by the architecture.
             choosen_relation_indexes = self.choose_rel_indexes(targets['relationships'])
-            pooled_concat = pooled_concat[choosen_relation_indexes]
         else:
-            # Reshape for passing through the classifier
-            pooled_concat = pooled_concat.view(boxes.size(0) ** 2, -1)
+            choosen_relation_indexes = None
 
         # 4. Run the Relationship classifier
-        rel_out = self.relationships_classifier(pooled_concat)
+        rel_out = self.features_to_relationships(pooled_subj_obj_regions, spatial_features,
+                                                 one_hot_subj_obj_label, pooled_rel_regions,
+                                                 choosen_relation_indexes)
         if self.training:
             t = targets['relationships'][choosen_relation_indexes]
             rel_class_loss = self.rel_class_loss_fn(rel_out, t)
@@ -192,6 +171,61 @@ class RelationshipsModel(nn.Module):
             rels_indexes += 1   # since the index 0 is the null relationship
 
             return {'relationships': rels_indexes, 'relationships_scores': rels_scores}
+
+    def features_to_relationships(self, pooled_subj_obj_regions, spatial_features,
+                                  one_hot_subj_obj_label, pooled_rel_regions,
+                                  choosen_relation_indexes):
+        # Should be overridden by the extending classes
+        raise NotImplementedError()
+
+
+class RelationshipsModelsSingleNet(RelationshipsModelBase):
+    def __init__(self, dataset, rel_context='relation_box', use_labels=False):
+        super().__init__(dataset, rel_context, use_labels)
+        if rel_context == 'relation_box':
+            input_size = 4 * 4 * 256 * 3 + 2 * self.num_classes * use_labels
+        elif rel_context == 'whole_image':
+            input_size = 4 * 4 * 256 * 3 + 2 * self.num_classes * use_labels
+        elif rel_context == 'image_level_labels':
+            input_size = 4 * 4 * 256 * 2 + 3 * self.num_classes * use_labels
+        elif rel_context is None:
+            input_size = 4 * 4 * 256 * 2 + 2 * self.num_classes * use_labels
+        # add spatial feature
+        input_size += 14
+        self.relationships_classifier = nn.Sequential(
+            nn.Linear(input_size, 4096),
+            nn.ReLU(),
+            nn.Dropout(),
+            nn.Linear(4096, 4096),
+            nn.ReLU(),
+            nn.Dropout(),
+            nn.Linear(4096, self.num_relationships),
+        )
+
+    def features_to_relationships(self, pooled_subj_obj_regions, spatial_features, one_hot_subj_obj_label,
+                                  pooled_rel_regions, choosen_idxs):
+        # Concatenate object regions and spatial features
+        pooled_concat = torch.cat((pooled_subj_obj_regions, spatial_features), dim=2)
+
+        # If needed, concatenate object labels
+        if self.use_labels:
+            pooled_concat = torch.cat((pooled_concat, one_hot_subj_obj_label), dim=2)
+
+        # If needed, concatenate the feature regarding the relationship context
+        if self.rel_context is not None:
+            pooled_concat = torch.cat((pooled_concat, pooled_rel_regions), dim=2)
+
+        if self.training:
+            # If training, we suppress some of the relationships
+            # Hence, calculate a filter in order to control the amount of relations and non-relations seen by the architecture.
+            pooled_concat = pooled_concat[choosen_idxs]
+        else:
+            # Reshape for passing through the classifier
+            pooled_concat = pooled_concat.view(pooled_concat.size(0) ** 2, -1)
+
+        # 4. Run the Relationship classifier
+        rel_out = self.relationships_classifier(pooled_concat)
+        return rel_out
 
 
 class AttributesModel(nn.Module):
@@ -240,7 +274,7 @@ class AttributesModel(nn.Module):
 
 class VRD(nn.Module):
     def __init__(self, detector, dataset, finetune_detector=False, train_relationships=True,
-                 train_attributes=True, rel_context='relation_box', use_labels=False, max_objects=80, lam=0.3):
+                 train_attributes=True, rel_context='relation_box', use_labels=False, max_objects=80, lam=1):
         super(VRD, self).__init__()
 
         # asserts
@@ -258,7 +292,7 @@ class VRD(nn.Module):
         self.lam = lam
 
         if train_relationships:
-            self.relationships_net = RelationshipsModel(dataset, rel_context, use_labels)
+            self.relationships_net = RelationshipsModelsSingleNet(dataset, rel_context, use_labels)
         if train_attributes:
             self.attributes_net = AttributesModel(dataset)
 
