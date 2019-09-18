@@ -12,20 +12,23 @@ import pdb
 
 
 class RelationshipsModel(nn.Module):
-    def __init__(self, dataset, rel_context='relation_box'):
+    def __init__(self, dataset, rel_context='relation_box', use_labels=False):
         super().__init__()
 
         self.num_relationships = dataset.num_relationships()
         self.num_classes = dataset.num_classes()
         self.rel_context = rel_context
+        self.use_labels = use_labels
+        print('Use labels: {}'.format(use_labels))
+
         if rel_context == 'relation_box':
-            input_size = 4 * 4 * 256 * 3 + 2 * self.num_classes
+            input_size = 4 * 4 * 256 * 3 + 2 * self.num_classes * use_labels
         elif rel_context == 'whole_image':
-            input_size = 4 * 4 * 256 * 3 + 2 * self.num_classes
+            input_size = 4 * 4 * 256 * 3 + 2 * self.num_classes * use_labels
         elif rel_context == 'image_level_labels':
-            input_size = 4 * 4 * 256 * 2 + 3 * self.num_classes
+            input_size = 4 * 4 * 256 * 2 + 3 * self.num_classes * use_labels
         elif rel_context is None:
-            input_size = 4 * 4 * 256 * 2 + 2 * self.num_classes
+            input_size = 4 * 4 * 256 * 2 + 2 * self.num_classes * use_labels
         # add spatial feature
         input_size += 14
         self.relationships_classifier = nn.Sequential(
@@ -144,30 +147,22 @@ class RelationshipsModel(nn.Module):
         pooled_subj_regions = pooled_regions.view(pooled_regions.size(0), -1). \
             unsqueeze(1).repeat(1, boxes.size(0), 1)  # K x K x 256*4*4
 
-        # Handle labels
-        one_hot_obj_label = nn.functional.one_hot(labels, self.num_classes).float().unsqueeze(0).repeat(boxes.size(0), 1,
-                                                                                                        1)  # K x K x num_classes
-        one_hot_subj_label = nn.functional.one_hot(labels, self.num_classes).float().unsqueeze(1).repeat(1, boxes.size(0),
-                                                                                                         1)  # K x K x num_classes
-
         # 3. Concatenate all the features
-        pooled_concat = torch.cat(
-            (
-                pooled_obj_regions, one_hot_obj_label,
-                pooled_subj_regions, one_hot_subj_label,
-                spatial_features
-            ),
-            dim=2
-        )
+        pooled_concat = torch.cat((pooled_obj_regions, pooled_subj_regions, spatial_features), dim=2)
+
+        if self.use_labels:
+            # Handle labels
+            one_hot_obj_label = nn.functional.one_hot(labels, self.num_classes).float().unsqueeze(0).repeat(boxes.size(0),
+                                                                                                            1,
+                                                                                                            1)  # K x K x num_classes
+            one_hot_subj_label = nn.functional.one_hot(labels, self.num_classes).float().unsqueeze(1).repeat(1,
+                                                                                                             boxes.size(0),
+                                                                                                             1)  # K x K x num_classes
+            pooled_concat = torch.cat((pooled_concat, one_hot_obj_label, one_hot_subj_label), dim=2)
 
         if self.rel_context is not None:
             # Add the information regarding the relationship context
-            pooled_concat = torch.cat(
-                (
-                    pooled_concat, pooled_rel_regions
-                ),
-                dim=2
-            )
+            pooled_concat = torch.cat((pooled_concat, pooled_rel_regions), dim=2)
 
         if self.training:
             # If training, we suppress some of the relationships
@@ -245,7 +240,7 @@ class AttributesModel(nn.Module):
 
 class VRD(nn.Module):
     def __init__(self, detector, dataset, finetune_detector=False, train_relationships=True,
-                 train_attributes=True, rel_context='relation_box', max_objects=80, lam=0.3):
+                 train_attributes=True, rel_context='relation_box', use_labels=False, max_objects=80, lam=0.3):
         super(VRD, self).__init__()
 
         # asserts
@@ -263,7 +258,7 @@ class VRD(nn.Module):
         self.lam = lam
 
         if train_relationships:
-            self.relationships_net = RelationshipsModel(dataset, rel_context)
+            self.relationships_net = RelationshipsModel(dataset, rel_context, use_labels)
         if train_attributes:
             self.attributes_net = AttributesModel(dataset)
 
