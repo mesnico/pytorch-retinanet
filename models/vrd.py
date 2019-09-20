@@ -344,41 +344,21 @@ class RelationshipsModelsMultipleNets(RelationshipsModelBase):
         return rel_out
 
 
-class AttributesModel(nn.Module):
+class AttributesModelBase(nn.Module):
     def __init__(self, dataset):
         super().__init__()
         self.num_attributes = dataset.num_attributes()
         self.num_classes = dataset.num_classes()
-        self.attributes_classifier = nn.Sequential(
-            nn.Linear(4 * 4 * 256 * 2 + self.num_classes, 4096),
-            nn.ReLU(),
-            nn.Dropout(),
-            nn.Linear(4096, 4096),
-            nn.ReLU(),
-            nn.Dropout(),
-            nn.Linear(4096, self.num_attributes),
-        )
         self.attr_loss_fn = nn.MultiLabelSoftMarginLoss()  # multi-label classification problem
         self.avgpool = nn.AdaptiveAvgPool2d((4, 4))
 
     def forward(self, boxes, labels, targets, img_features, pooled_regions):
         # Infer the attributes for every object in the images
 
-        # Compute global image features
-        img_features_pooled = self.avgpool(img_features)
-        # 1. Concatenate image_features, pooled_regions and labels
-        attr_features = torch.cat(
-            (
-                pooled_regions.view(pooled_regions.size(0), -1),  # K x (256*4*4)
-                img_features_pooled.view(-1).unsqueeze(0).expand(boxes.size(0), -1),
-                # concatenate image level features to all the regions  K x (256*4*4)
-                nn.functional.one_hot(labels, self.num_classes).float()  # K x num_classes
-            ),
-            dim=1
-        )
+        one_hot_label = nn.functional.one_hot(labels, self.num_classes)
 
         # 2. Run the multi-label classifier
-        attr_out = self.attributes_classifier(attr_features)  # K x num_attr
+        attr_out = self.features_to_attributes(img_features, pooled_regions, one_hot_label)
         if self.training:
             attr_loss = self.attr_loss_fn(attr_out, targets['attributes'].float())
             return attr_loss
@@ -386,6 +366,79 @@ class AttributesModel(nn.Module):
             inferred_attr = torch.sigmoid(attr_out)
             attr_scores, attr_indexes = torch.sort(inferred_attr, dim=1, descending=True)
             return {'attributes': attr_indexes, 'attributes_scores': attr_scores}
+
+    def features_to_attributes(self, img_features, pooled_regions, one_hot_label):
+        raise NotImplementedError
+
+
+class AttributesModelSingleNet(AttributesModelBase):
+    def __init__(self, dataset):
+        super().__init__(dataset)
+        self.attributes_classifier = nn.Sequential(
+            nn.Linear(4 * 4 * 256 + self.num_classes, 4096),
+            nn.ReLU(),
+            nn.Dropout(),
+            nn.Linear(4096, 4096),
+            nn.ReLU(),
+            nn.Dropout(),
+            nn.Linear(4096, self.num_attributes),
+        )
+
+    def features_to_attributes(self, img_features, pooled_regions, one_hot_label):
+        # Compute global image features
+        # img_features_pooled = self.avgpool(img_features)
+        # 1. Concatenate image_features, pooled_regions and labels
+        attr_features = torch.cat(
+            (
+                pooled_regions.view(pooled_regions.size(0), -1),  # K x (256*4*4)
+                # img_features_pooled.view(-1).unsqueeze(0).expand(img_features_pooled.size(0), -1),
+                # concatenate image level features to all the regions  K x (256*4*4)
+                one_hot_label.float()  # K x num_classes
+            ),
+            dim=1
+        )
+        out = self.attributes_classifier(attr_features)  # K x num_attr
+        return out
+
+
+class AttributesModelMultipleNets(AttributesModelBase):
+    def __init__(self, dataset):
+        super().__init__(dataset)
+        self.final_classifier = nn.Sequential(
+            nn.Linear(512 + 256, 4096),
+            nn.ReLU(),
+            nn.Linear(4096, 4096),
+            nn.ReLU(),
+            nn.Linear(4096, self.num_attributes),
+        )
+
+        self.labels_net = nn.Sequential(
+            nn.Linear(self.num_classes, 256),
+            nn.ReLU(),
+            nn.Dropout(),
+            nn.Linear(256, 256),
+            nn.ReLU(),
+            nn.Dropout(),
+        )
+
+        self.objects_convnet = nn.Sequential(
+            nn.Conv2d(256, 512, 2, stride=2),
+            nn.BatchNorm2d(512),
+            nn.ReLU(),
+            nn.Dropout(),
+        )
+
+    def features_to_attributes(self, img_features, pooled_regions, one_hot_label):
+        # Process labels
+        p_label = self.labels_net(one_hot_label)
+
+        p_objects = self.objects_convnet(pooled_regions)
+        p_objects = p_objects.mean(dim=(2, 3))
+
+        concat = torch.cat((p_label, p_objects), dim=1)
+
+        out = self.final_classifier(concat)  # K x num_attr
+        return out
 
 
 class VRD(nn.Module):
@@ -410,7 +463,7 @@ class VRD(nn.Module):
         if train_relationships:
             self.relationships_net = RelationshipsModelsMultipleNets(dataset, rel_context, use_labels)
         if train_attributes:
-            self.attributes_net = AttributesModel(dataset)
+            self.attributes_net = AttributesModelMultipleNets(dataset)
 
     def train(self, mode=True):
         self.detector.train(mode)
