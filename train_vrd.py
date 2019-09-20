@@ -81,8 +81,8 @@ def main(args=None):
         dataset_train = OidDatasetVRD(parser.data_path, subset='train',
                                    transform=Compose(
                                        [ToTensor(), Augment(), Resizer(min_side=600, max_side=1000)]))
-        dataset_val = OidDatasetVRD(parser.data_path, subset='validation',
-                                 transform=Compose([ToTensor(), Resizer(min_side=600, max_side=1000)]))
+        # dataset_val = OidDatasetVRD(parser.data_path, subset='validation',
+        #                         transform=Compose([ToTensor(), Resizer(min_side=600, max_side=1000)]))
 
     elif parser.dataset == 'dummy':
         # dummy dataset used only for debugging purposes
@@ -94,9 +94,9 @@ def main(args=None):
     # if training one of relationships or attributes, balance!
     if not (parser.train_attr and parser.train_rel):
         print('Dataloader is using the BalancedSampler!')
-        sampler_val = BalancedSampler(dataset_train, batch_size=parser.bs, train_rel=parser.train_rel, train_attr=parser.train_attr)
-        dataloader_train = DataLoader(dataset_val, num_workers=8, collate_fn=collate_fn, batch_sampler=sampler_val)
-    dataloader_train = DataLoader(dataset_train, num_workers=8, batch_size=parser.bs, collate_fn=collate_fn, shuffle=True)
+        sampler_train = BalancedSampler(dataset_train, batch_size=parser.bs, train_rel=parser.train_rel, train_attr=parser.train_attr)
+        dataloader_train = DataLoader(dataset_train, num_workers=8, collate_fn=collate_fn, batch_sampler=sampler_train)
+    # dataloader_train = DataLoader(dataset_train, num_workers=8, batch_size=parser.bs, collate_fn=collate_fn, shuffle=True)
 
     # if dataset_val is not None:
     #    sampler_val = AspectRatioBasedSampler(dataset_val, batch_size=1, drop_last=False)

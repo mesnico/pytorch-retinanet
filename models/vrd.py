@@ -74,8 +74,10 @@ class RelationshipsModelBase(nn.Module):
         chosen = chosen * not_diagonal'''
 
         # at least one value should be 1 in order to avoid that the whole matrix is 0 (floating point exception happens)
-        rawind = torch.argmax(rand_matrix)
-        chosen[rawind // relationships.size(0), rawind % relationships.size(1)] = 1
+        if torch.nonzero(relationships).shape[0] == 0:
+            rawind = torch.argmax(rand_matrix)
+            chosen[rawind // relationships.size(0), rawind % relationships.size(1)] = 1
+            print('WARNING! Images with zero relationships should not be here now.')
 
         return chosen > 0
 
