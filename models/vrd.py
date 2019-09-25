@@ -355,6 +355,160 @@ class RelationshipsModelsMultipleNets(RelationshipsModelBase):
         return rel_out
 
 
+class DRNet(nn.Module):
+    def __init__(self, obj_feats, rel_feats, num_rels, num_objs, iters=5):
+        super().__init__()
+        self.w_a = nn.Linear(obj_feats, num_objs)
+        self.w_r = nn.Linear(rel_feats, num_rels)
+
+        self.w_sr = nn.Linear(num_rels, num_objs)
+        self.w_so = nn.Linear(num_objs, num_objs)
+
+        self.w_rs = nn.Linear(num_objs, num_rels)
+        self.w_ro = nn.Linear(num_objs, num_rels)
+
+        self.w_os = nn.Linear(num_objs, num_objs)
+        self.w_or = nn.Linear(num_rels, num_objs)
+
+        self.num_rels = num_rels
+        self.num_objs = num_objs
+        self.iters = iters
+        self.cuda_on = False
+
+    def forward(self, xs, xo, xr):
+        qs = torch.zeros((xs.shape[0], self.num_objs), requires_grad=True)
+        qo = torch.zeros((xo.shape[0], self.num_objs), requires_grad=True)
+        qr = torch.zeros((xr.shape[0], self.num_rels), requires_grad=True)
+        if self.cuda_on:
+            qs, qo, qr = qs.cuda(), qo.cuda(), qr.cuda()
+        for i in range(self.iters):
+            qs_out = torch.stack((self.w_a(xs), self.w_sr(qr), self.w_so(qo)), dim=0).sum(dim=0)
+            qr_out = torch.stack((self.w_r(xr), self.w_rs(qs), self.w_ro(qo)), dim=0).sum(dim=0)
+            qo_out = torch.stack((self.w_a(xo), self.w_os(qs), self.w_or(qr)), dim=0).sum(dim=0)
+            qs = F.relu(qs_out)
+            if i != self.iters - 1:
+                qr = F.relu(qr_out)
+            else:
+                qr = qr_out
+            qo = F.relu(qo_out)
+
+        return qr
+
+    def cuda(self, device=None):
+        self.cuda_on = True
+        return super().cuda(device)
+
+
+class RelationshipsModelDRNet(RelationshipsModelBase):
+    def __init__(self, dataset, rel_context='relation_box', use_labels=False):
+        super().__init__(dataset, rel_context, use_labels)
+
+        assert rel_context is not None, "Relation context is needed in DRNet"
+        if rel_context == 'relation_box':
+            self.context_net = nn.Sequential(
+                nn.Conv2d(256, 512, 2, stride=2),
+                nn.BatchNorm2d(512),
+                nn.ReLU(),
+                nn.Dropout(),
+            )
+        elif rel_context == 'whole_image':
+            self.context_net = nn.Sequential(
+                nn.Conv2d(256, 512, 2, stride=2),
+                nn.BatchNorm2d(512),
+                nn.ReLU(),
+                nn.Dropout(),
+            )
+        elif rel_context == 'image_level_labels':
+            raise NotImplementedError
+
+        self.spatial_net = nn.Sequential(
+            nn.Linear(14, 256),
+            nn.ReLU(),
+            nn.Dropout(),
+            nn.Linear(256, 256),
+            nn.ReLU(),
+            nn.Dropout(),
+        )
+
+        self.objects_convnet = nn.Sequential(
+            nn.Conv2d(256, 512, 2, stride=2),
+            nn.BatchNorm2d(512),
+            nn.ReLU(),
+            nn.Dropout(),
+        )
+
+        self.objects_labels_net = nn.Sequential(
+            nn.Linear(self.num_classes + 512, 1024),
+            nn.ReLU(),
+            nn.Dropout(),
+            nn.Linear(1024, 1024),
+            nn.ReLU(),
+        )
+
+        self.context_spatial_net = nn.Sequential(
+            nn.Linear(256 + 512, 1024),
+            nn.ReLU(),
+            nn.Linear(1024, 1024),
+            nn.ReLU(),
+        )
+
+        #self.obj_project = nn.Linear(1024, self.num_classes)
+        #self.rel_project = nn.Linear(1024, self.num_relationships)
+        self.dr_net = DRNet(obj_feats=1024, rel_feats=1024, num_rels=self.num_relationships, num_objs=self.num_classes)
+
+    def features_to_relationships(self, pooled_subj_obj_regions, spatial_features, one_hot_subj_obj_label,
+                                  pooled_rel_regions, choosen_idxs):
+        if self.training:
+            # Filter training examples
+
+            pooled_subj_obj_regions = pooled_subj_obj_regions[choosen_idxs]
+            spatial_features = spatial_features[choosen_idxs]
+            one_hot_subj_obj_label = one_hot_subj_obj_label[choosen_idxs]
+            pooled_rel_regions = pooled_rel_regions[choosen_idxs]
+        else:
+            # Reshape these tensors in order to pass through the net
+            pooled_subj_obj_regions = pooled_subj_obj_regions.view(-1, pooled_subj_obj_regions.size(2),
+                                                                   pooled_subj_obj_regions.size(3),
+                                                                   pooled_subj_obj_regions.size(4))
+            spatial_features = spatial_features.view(-1, spatial_features.size(2))
+            one_hot_subj_obj_label = one_hot_subj_obj_label.view(-1, one_hot_subj_obj_label.size(2))
+            pooled_rel_regions = pooled_rel_regions.view(-1, pooled_rel_regions.size(2),
+                                                         pooled_rel_regions.size(3),
+                                                         pooled_rel_regions.size(4))
+
+        # Forward through the net
+
+        p_subj = self.objects_convnet(pooled_subj_obj_regions[:, :256, :, :])
+        p_subj = p_subj.mean(dim=(2, 3))  # global average pooling
+        p_subj = torch.cat((p_subj, one_hot_subj_obj_label[:, :self.num_classes]), dim=1)
+
+        p_obj = self.objects_convnet(pooled_subj_obj_regions[:, 256:, :, :])
+        p_obj = p_obj.mean(dim=(2, 3))  # global average pooling
+        p_obj = torch.cat((p_obj, one_hot_subj_obj_label[:, self.num_classes:]), dim=1)
+
+        # Prepare the aggregated features (spatial - context for relationships and visual - label for objects)
+        p_context = self.context_net(pooled_rel_regions)
+        p_context = p_context.mean(dim=(2, 3))
+        p_spatial = self.spatial_net(spatial_features)
+
+        p_rel = torch.cat((p_context, p_spatial), dim=1)
+        p_rel = self.context_spatial_net(p_rel)
+        p_obj = self.objects_labels_net(p_obj)
+        p_subj = self.objects_labels_net(p_subj)
+
+        # Forward the DRNet
+        #p_obj = F.softmax(self.obj_project(p_obj), dim=1)
+        #p_subj = F.softmax(self.obj_project(p_subj), dim=1)
+        #p_rel = F.softmax(self.rel_project(p_rel), dim=1)
+        rel_out = self.dr_net(p_subj, p_obj, p_rel)
+
+        return rel_out
+
+    def cuda(self, device=None):
+        self.dr_net.cuda()
+        return super().cuda(device)
+
+
 class AttributesModelBase(nn.Module):
     def __init__(self, dataset):
         super().__init__()
@@ -471,10 +625,8 @@ class VRD(nn.Module):
         self.max_objects = max_objects
         self.lam = lam
 
-        if train_relationships:
-            self.relationships_net = RelationshipsModelsMultipleNets(dataset, rel_context, use_labels)
-        if train_attributes:
-            self.attributes_net = AttributesModelMultipleNets(dataset)
+        self.relationships_net = RelationshipsModelDRNet(dataset, rel_context, use_labels) if train_relationships else None
+        self.attributes_net = AttributesModelMultipleNets(dataset) if train_attributes else None
 
     def train(self, mode=True):
         self.detector.train(mode)
@@ -603,8 +755,10 @@ class VRD(nn.Module):
 
     def cuda(self, device=None):
         self.cuda_on = True
-        self.relationships_net.cuda()
-        self.attributes_net.cuda()
+        if self.relationships_net is not None:
+            self.relationships_net.cuda()
+        if self.attributes_net is not None:
+            self.attributes_net.cuda()
         return super().cuda(device)
 
 
