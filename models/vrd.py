@@ -25,6 +25,7 @@ class RelationshipsModelBase(nn.Module):
         # self.rel_relationshipness_loss_fn = FocalLoss()
         self.rel_relationshipness_loss_fn = nn.BCEWithLogitsLoss()
         # self.rel_loss_fn = FocalLoss(num_classes=self.num_relationships, reduction='sum')
+        self.cuda_on = False
 
     def bbox_union(self, boxes_perm, padding=0):
         x1, _ = torch.min(boxes_perm[:, :, [0, 4]], dim=2)
@@ -170,6 +171,12 @@ class RelationshipsModelBase(nn.Module):
 
             # reshape back to a square matrix
             rels_scores = rels_scores.view(boxes.size(0), boxes.size(0))
+            # put diagonal scores manually to 0 (object are not related to theirselves)
+            mask = 1 - torch.eye(boxes.size(0))
+            if self.cuda_on:
+                mask = mask.cuda()
+            rels_scores *= mask
+
             rels_indexes = rels_indexes.view(boxes.size(0), boxes.size(0))
             rels_indexes += 1   # since the index 0 is the null relationship
 
@@ -180,6 +187,10 @@ class RelationshipsModelBase(nn.Module):
                                   choosen_relation_indexes):
         # Should be overridden by the extending classes
         raise NotImplementedError()
+
+    def cuda(self, device=None):
+        self.cuda_on = True
+        return super().cuda(device)
 
 
 class RelationshipsModelsSingleNet(RelationshipsModelBase):
@@ -430,7 +441,7 @@ class AttributesModelMultipleNets(AttributesModelBase):
 
     def features_to_attributes(self, img_features, pooled_regions, one_hot_label):
         # Process labels
-        p_label = self.labels_net(one_hot_label)
+        p_label = self.labels_net(one_hot_label.float())
 
         p_objects = self.objects_convnet(pooled_regions)
         p_objects = p_objects.mean(dim=(2, 3))
@@ -592,6 +603,8 @@ class VRD(nn.Module):
 
     def cuda(self, device=None):
         self.cuda_on = True
+        self.relationships_net.cuda()
+        self.attributes_net.cuda()
         return super().cuda(device)
 
 

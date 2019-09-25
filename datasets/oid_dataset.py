@@ -791,12 +791,12 @@ class OidDatasetVRD(Dataset):
                     np.clip(s_box[1] / img_annotations['h'], 0, 1),
                     np.clip(s_box[2] / img_annotations['w'], 0, 1),
                     np.clip(s_box[3] / img_annotations['h'], 0, 1),
-                    self.id_to_labels_idx[o_label] if r_labels is not -1 else self.attr_id_to_labels_idx[o_label],
+                    self.id_to_labels_idx[o_label] if r_label is not -1 else self.attr_id_to_labels_idx[o_label],
                     np.clip(o_box[0] / img_annotations['w'], 0, 1),
                     np.clip(o_box[1] / img_annotations['h'], 0, 1),
                     np.clip(o_box[2] / img_annotations['w'], 0, 1),
                     np.clip(o_box[3] / img_annotations['h'], 0, 1),
-                    self.rel_to_labels_idx[r_label] if r_label is not -1 else 'is'
+                    self.rel_id_to_labels_idx[r_label] if r_label is not -1 else 'is'
                 )
                 detections.append(det_str)
 

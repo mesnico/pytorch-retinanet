@@ -23,9 +23,9 @@ from models.create_model import create_detection_model
 from models.vrd import VRD
 
 # assert torch.__version__.split('.')[1] == '4'
-thres = 0.4
-rel_thresh = 0.2
-attr_thresh = 0.2
+thres = 0.2
+rel_thresh = 0.1
+attr_thresh = 0.1
 max_objects = 80
 
 use_gpu = True
@@ -52,7 +52,7 @@ def main(args=None):
 
     parser = parser.parse_args(args)
 
-    assert parser.model_rel is not None and parser.model_attr is not None and parser.model_rel is not None, \
+    assert parser.model_rel is not None and parser.model_attr is not None and parser.model_detector is not None, \
            'Models snapshots have to be specified!'
 
     if parser.dataset == 'openimages':
@@ -67,7 +67,7 @@ def main(args=None):
     # Create the model
     detector = create_detection_model(dataset_val.num_classes(), parser, box_score_thresh=thres)
     model = VRD(detector, dataset=dataset_val, train_relationships=parser.model_rel is not None,
-                train_attributes=parser.model_attr is not None, max_objects = max_objects)
+                train_attributes=parser.model_attr is not None, max_objects=max_objects)
 
     # Load the detector
     checkpoint = torch.load(parser.model_detector, map_location=lambda storage, loc: storage)
@@ -106,6 +106,8 @@ def main(args=None):
         cv2.arrowedLine(image, (subj[0], subj[1]), (obj[0], obj[1]), (255, 0, 0), 2, tipLength=0.02)
         cv2.putText(image, rel_name, ((subj[0] + obj[0]) / 2, (subj[1] + obj[1]) / 2), cv2.FONT_HERSHEY_PLAIN, 1, (0, 255, 0), 2)
 
+    all_detections = []
+
     for idx, data in enumerate(tqdm.tqdm(dataloader_val)):
         with torch.no_grad():
             st = time.time()
@@ -131,10 +133,6 @@ def main(args=None):
             attributes = output['attributes']
             attr_scores = output['attributes_scores']
 
-            if len(boxes) == 0:
-                # no detected objects, skip
-                continue
-
             subj_boxes_out = []
             subj_labels_out = []
             obj_boxes_out = []
@@ -142,25 +140,22 @@ def main(args=None):
             rel_labels_out = []
             rel_scores_out = []
 
-            all_detections = []
+            if len(boxes) != 0:
+                # num_objects = min(boxes.shape[0], max_objects)
 
-            # num_objects = min(boxes.shape[0], max_objects)
-
-            # Collect objects and attributes
-            for j in range(attributes.shape[0]):
-                bbox = boxes[j, :4]
-                attr = attributes[j, 0].item() if parser.model_attr is not None and attr_scores[j, 0] > attr_thresh else 0      # TODO: only the top rank attribute is considered, generalize better!
-                # We add an 'is' relation. 'is' relation is mapped to relation index of -1.
-                if attr != 0:
-                    subj_boxes_out.append(bbox)
-                    obj_boxes_out.append(bbox)
-                    rel_labels_out.append(-1)
-                    rel_scores_out.append(attr_scores[j, 0])
-                    subj_labels_out.append(int(classification[j]))
-                    obj_labels_out.append(attr)
-
-            # Collect relationships
-            if parser.model_rel:
+                # Collect objects and attributes
+                for j in range(attributes.shape[0]):
+                    bbox = boxes[j, :4]
+                    attr = attributes[j, 0].item() if parser.model_attr is not None and attr_scores[j, 0] > attr_thresh else 0      # TODO: only the top rank attribute is considered, generalize better!
+                    # We add an 'is' relation. 'is' relation is mapped to relation index of -1.
+                    if attr != 0:
+                        subj_boxes_out.append(bbox)
+                        obj_boxes_out.append(bbox)
+                        rel_labels_out.append(-1)
+                        rel_scores_out.append(attr_scores[j, 0])
+                        subj_labels_out.append(int(classification[j]))
+                        obj_labels_out.append(attr)
+                # Collect relationships
                 for s_ind in range(relationships.shape[0]):
                     for o_ind in range(relationships.shape[1]):
                         subj = boxes[s_ind, :4]
