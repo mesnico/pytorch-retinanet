@@ -78,7 +78,7 @@ class RelationshipsModelBase(nn.Module):
         if torch.nonzero(relationships).shape[0] == 0:
             rawind = torch.argmax(rand_matrix)
             chosen[rawind // relationships.size(0), rawind % relationships.size(1)] = 1
-            print('WARNING! Images with zero relationships should not be here now.')
+            # print('WARNING! Images with zero relationships should not be here now.')
 
         return chosen > 0
 
@@ -355,6 +355,134 @@ class RelationshipsModelsMultipleNets(RelationshipsModelBase):
         return rel_out
 
 
+class RelationshipsModelSumOfProbabilities(RelationshipsModelBase):
+    def __init__(self, dataset, rel_context='relation_box', use_labels=False):
+        super().__init__(dataset, rel_context, use_labels)
+        if rel_context == 'relation_box':
+            self.context_net = nn.Sequential(
+                nn.Conv2d(256, 512, 2, stride=1),
+                nn.BatchNorm2d(512),
+                nn.ReLU(),
+                nn.Conv2d(512, 512, 2, stride=1),
+                nn.BatchNorm2d(512),
+                nn.ReLU(),
+                nn.Dropout(),
+            )
+        elif rel_context == 'whole_image':
+            self.context_net = nn.Sequential(
+                nn.Conv2d(256, 512, 2, stride=2),
+                nn.BatchNorm2d(512),
+                nn.ReLU(),
+                nn.Dropout(),
+            )
+        elif rel_context == 'image_level_labels':
+            raise NotImplementedError
+        elif rel_context is None:
+            self.context_net = None
+
+        self.spatial_net = nn.Sequential(
+            nn.Linear(14, 256),
+            nn.ReLU(),
+            nn.Dropout(),
+            nn.Linear(256, 256),
+            nn.ReLU(),
+            nn.Dropout(),
+            nn.Linear(256, self.num_relationships)
+        )
+
+        if use_labels:
+            self.labels_net = nn.Sequential(
+                nn.Linear(2 * self.num_classes, 256),
+                nn.ReLU(),
+                nn.Dropout(),
+                nn.Linear(256, 256),
+                nn.ReLU(),
+                nn.Dropout(),
+                nn.Linear(256, self.num_relationships)
+            )
+
+        self.visual_objects_classifier = nn.Sequential(
+            nn.Linear(256 * 4, 1024),
+            nn.ReLU(),
+            nn.Dropout(),
+            nn.Linear(1024, 1024),
+            nn.ReLU(),
+            nn.Dropout(),
+            nn.Linear(1024, self.num_relationships)
+        )
+
+        self.visual_relationships_classifier = nn.Sequential(
+            nn.Linear(256 * 4 * 2 + 512 * 4, 2048),
+            nn.ReLU(),
+            nn.Dropout(),
+            nn.Linear(2048, 2048),
+            nn.ReLU(),
+            nn.Dropout(),
+            nn.Linear(2048, self.num_relationships)
+        )
+
+        # final classifier
+        '''input = 256 + 1024    # spatial features + objects
+        if use_labels:
+            input += 256
+        if rel_context == 'relation_box' or rel_context == 'whole_image':
+            input += 512
+        self.final_classifier = nn.Sequential(
+            nn.Linear(input, 4096),
+            nn.ReLU(),
+            nn.Linear(4096, 4096),
+            nn.ReLU(),
+            nn.Linear(4096, self.num_relationships),
+        )'''
+
+    def features_to_relationships(self, pooled_subj_obj_regions, spatial_features, one_hot_subj_obj_label,
+                                  pooled_rel_regions, choosen_idxs):
+        if self.training:
+            # Filter training examples
+
+            pooled_subj_obj_regions = pooled_subj_obj_regions[choosen_idxs]
+            spatial_features = spatial_features[choosen_idxs]
+            if self.use_labels:
+                one_hot_subj_obj_label = one_hot_subj_obj_label[choosen_idxs]
+            if self.rel_context is not None:
+                pooled_rel_regions = pooled_rel_regions[choosen_idxs]
+        else:
+            # Reshape these tensors in order to pass through the net
+            pooled_subj_obj_regions = pooled_subj_obj_regions.view(-1, pooled_subj_obj_regions.size(2),
+                                                                   pooled_subj_obj_regions.size(3),
+                                                                   pooled_subj_obj_regions.size(4))
+            spatial_features = spatial_features.view(-1, spatial_features.size(2))
+            if self.use_labels:
+                one_hot_subj_obj_label = one_hot_subj_obj_label.view(-1, one_hot_subj_obj_label.size(2))
+            if self.rel_context is not None:
+                pooled_rel_regions = pooled_rel_regions.view(-1, pooled_rel_regions.size(2),
+                                                             pooled_rel_regions.size(3),
+                                                             pooled_rel_regions.size(4))
+
+        # Forward through the net
+        class_spatial = self.spatial_net(spatial_features)
+
+        p_subj = F.avg_pool2d(pooled_subj_obj_regions[:, :256, :, :], 2, stride=2)
+        p_subj = p_subj.view(p_subj.size(0), -1)  # flatten
+
+        p_obj = F.avg_pool2d(pooled_subj_obj_regions[:, 256:, :, :], 2, stride=2)
+        p_obj = p_obj.view(p_obj.size(0), -1)  # flatten
+
+        class_subj = self.visual_objects_classifier(p_subj)
+        class_obj = self.visual_objects_classifier(p_obj)
+
+        p_context = self.context_net(pooled_rel_regions)
+        p_context = p_context.view(p_context.size(0), -1)  # flatten
+
+        concat = torch.cat((p_subj, p_obj, p_context), dim=1)
+        class_rel = self.visual_relationships_classifier(concat)
+
+        class_labels = self.labels_net(one_hot_subj_obj_label)
+
+        final = torch.stack((class_subj, class_obj, class_rel, class_labels, class_spatial), dim=0).sum(dim=0)
+        return final
+
+
 class DRNet(nn.Module):
     def __init__(self, obj_feats, rel_feats, num_rels, num_objs, iters=5):
         super().__init__()
@@ -570,7 +698,7 @@ class AttributesModelMultipleNets(AttributesModelBase):
     def __init__(self, dataset):
         super().__init__(dataset)
         self.final_classifier = nn.Sequential(
-            nn.Linear(512 + 256, 4096),
+            nn.Linear(512 * 4 + 256, 4096),
             nn.ReLU(),
             nn.Linear(4096, 4096),
             nn.ReLU(),
@@ -598,7 +726,7 @@ class AttributesModelMultipleNets(AttributesModelBase):
         p_label = self.labels_net(one_hot_label.float())
 
         p_objects = self.objects_convnet(pooled_regions)
-        p_objects = p_objects.mean(dim=(2, 3))
+        p_objects = p_objects.view(p_objects.size(0), -1)
 
         concat = torch.cat((p_label, p_objects), dim=1)
 
@@ -625,7 +753,7 @@ class VRD(nn.Module):
         self.max_objects = max_objects
         self.lam = lam
 
-        self.relationships_net = RelationshipsModelDRNet(dataset, rel_context, use_labels) if train_relationships else None
+        self.relationships_net = RelationshipsModelsMultipleNets(dataset, rel_context, use_labels) if train_relationships else None
         self.attributes_net = AttributesModelMultipleNets(dataset) if train_attributes else None
 
     def train(self, mode=True):

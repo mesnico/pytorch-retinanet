@@ -24,8 +24,8 @@ from models.vrd import VRD
 
 # assert torch.__version__.split('.')[1] == '4'
 thres = 0.2
-rel_thresh = 0.1
-attr_thresh = 0.1
+rel_thresh = 0.3
+attr_thresh = 0.3
 max_objects = 80
 
 use_gpu = True

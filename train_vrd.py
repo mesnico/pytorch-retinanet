@@ -49,6 +49,7 @@ def main(args=None):
     parser.add_argument('--resume_attr', help='Checkpoint to load the attributes model from')
     parser.add_argument('--resume_rel', help='Checkpoint to load the relationships from')
     parser.add_argument('--detector_snapshot', help='Detector snapshot')
+    parser.add_argument('--finetune_detector', action='store_true', default=False, help='Enable finetuning the detector')
 
     parser.add_argument('--depth', help='Resnet depth, must be one of 18, 34, 50, 101, 152', type=int, default=50)
     parser.add_argument('--epochs', help='Number of epochs', type=int, default=100)
@@ -92,10 +93,10 @@ def main(args=None):
         raise ValueError('Dataset type not understood (must be csv or coco), exiting.')
 
     # if training one of relationships or attributes, balance!
-    if not (parser.train_attr and parser.train_rel):
-        print('Dataloader is using the BalancedSampler!')
-        sampler_train = BalancedSampler(dataset_train, batch_size=parser.bs, train_rel=parser.train_rel, train_attr=parser.train_attr)
-        dataloader_train = DataLoader(dataset_train, num_workers=8, collate_fn=collate_fn, batch_sampler=sampler_train)
+    # if not (parser.train_attr and parser.train_rel):
+    print('Dataloader is using the BalancedSampler!')
+    sampler_train = BalancedSampler(dataset_train, batch_size=parser.bs, train_rel=parser.train_rel, train_attr=parser.train_attr)
+    dataloader_train = DataLoader(dataset_train, num_workers=8, collate_fn=collate_fn, batch_sampler=sampler_train)
     # dataloader_train = DataLoader(dataset_train, num_workers=8, batch_size=parser.bs, collate_fn=collate_fn, shuffle=True)
 
     # if dataset_val is not None:
@@ -134,7 +135,8 @@ def main(args=None):
         print('Correctly loaded the detector checkpoint {}'.format(parser.detector_snapshot))
 
     # Create the VRD model given the detector
-    model = VRD(detector, dataset=dataset_train, train_relationships=parser.train_rel, train_attributes=parser.train_attr)
+    model = VRD(detector, dataset=dataset_train, train_relationships=parser.train_rel,
+                train_attributes=parser.train_attr, finetune_detector=parser.finetune_detector)
     if use_gpu:
         model = model.cuda()
         model = torch.nn.DataParallel(model).cuda()
@@ -157,7 +159,7 @@ def main(args=None):
     if parser.resume_attr:
         print('Loading attributes checkpoint {}'.format(parser.resume_attr))
         attr_checkpoint = torch.load(parser.resume_attr)
-        model.module.relationships_net.load_state_dict(attr_checkpoint['model_attr'])
+        model.module.attributes_net.load_state_dict(attr_checkpoint['model_attr'])
         if not parser.resume_rel:
             print('Resuming also scheduler and optimizer...')
             start_epoch = attr_checkpoint['epoch']
@@ -247,6 +249,7 @@ def main(args=None):
                 save_checkpoint({
                     'model_rel': model.module.relationships_net.state_dict() if parser.train_rel else None,
                     'model_attr': model.module.attributes_net.state_dict() if parser.train_attr else None,
+                    'model_det': model.module.detector.state_dict() if parser.finetune_detector else None,
                     'optimizer': optimizer.state_dict(),
                     'scheduler': scheduler.state_dict(),
                     'epoch': epoch_num
@@ -274,6 +277,7 @@ def main(args=None):
         save_checkpoint({
             'model_rel': model.module.relationships_net.state_dict() if parser.train_rel else None,
             'model_attr': model.module.attributes_net.state_dict() if parser.train_attr else None,
+            'model_det': model.module.detector.state_dict() if parser.finetune_detector else None,
             'optimizer': optimizer.state_dict(),
             'scheduler': scheduler.state_dict(),
             'epoch': epoch_num

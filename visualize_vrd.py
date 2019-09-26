@@ -23,8 +23,9 @@ from models.vrd import VRD
 
 # assert torch.__version__.split('.')[1] == '4'
 thres = 0.4
-rel_thresh = 0.5
-attr_thresh = 0.2
+rel_thresh = 0.1
+attr_thresh = 0.1
+max_objects = 80
 
 use_gpu = True
 
@@ -57,12 +58,12 @@ def main(args=None):
         raise ValueError('Dataset type not understood (must be csv or coco), exiting.')
 
     #sampler_val = AspectRatioBasedSampler(dataset_val, batch_size=1, drop_last=False)
-    dataloader_val = DataLoader(dataset_val, num_workers=1, collate_fn=collate_fn, batch_size=1)
+    dataloader_val = DataLoader(dataset_val, num_workers=1, collate_fn=collate_fn, batch_size=1, shuffle=True)
 
     # Create the model
     detector = create_detection_model(dataset_val.num_classes(), parser, box_score_thresh=thres)
     model = VRD(detector, dataset=dataset_val, train_relationships=parser.model_rel is not None, 
-                train_attributes=parser.model_attr is not None)
+                train_attributes=parser.model_attr is not None, max_objects=max_objects)
 
     # Load the detector
     checkpoint = torch.load(parser.model_detector, map_location=lambda storage, loc: storage)
@@ -156,7 +157,7 @@ def main(args=None):
             if len(boxes) != 0:
 
                 # Draw objects
-                for j in range(boxes.shape[0]):
+                for j in range(attributes.shape[0]):
                     bbox = boxes[j, :4].int()
                     attr = attributes[j, 0].item() if parser.model_attr is not None and attr_scores[j, 0] > attr_thresh else 0      # TODO: only the top rank attribute is considered, generalize better!
                     label_name = dataset_val.labels[int(classification[j])]

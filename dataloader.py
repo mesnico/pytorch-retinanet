@@ -11,6 +11,7 @@ from torchvision import transforms, utils
 from torch.utils.data.sampler import Sampler
 import torchvision.transforms.functional as F
 
+import pdb
 
 def collate_fn(batch):
     return tuple(zip(*batch))
@@ -84,10 +85,22 @@ class AspectRatioBasedSampler(Sampler):
 class BalancedSampler(Sampler):
 
     def __init__(self, data_source, batch_size, train_rel=False, train_attr=False):
-        assert not (train_rel and train_attr), 'Cannot balance both relationships and attributes'
+        # assert not (train_rel and train_attr), 'Cannot balance both relationships and attributes'
         self.data_source = data_source
         self.batch_size = batch_size
-        if not (train_attr or train_rel):
+        if train_rel and train_attr:
+            print('Warning! Experimental balanced sampler for joint training of attributes and relationships')
+            # consider is as relationship
+            rel_freq_dict = self.data_source.build_relationships_frequencies()
+            attr_freq_dict = self.data_source.build_attributes_frequencies()
+            attr_freq_dict = {k+self.data_source.num_relationships(): v for k, v in attr_freq_dict.items()}
+
+            # merge the two freq dictionaries
+            self.class_freq_dict = rel_freq_dict
+            self.class_freq_dict.update(attr_freq_dict)
+            self.num_classes = self.data_source.num_relationships() + self.data_source.num_attributes()
+
+        elif not (train_attr or train_rel):
             self.class_freq_dict = self.data_source.build_class_frequencies()
             self.num_classes = self.data_source.num_classes()
         elif train_rel:
