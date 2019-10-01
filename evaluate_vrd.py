@@ -7,6 +7,7 @@ import pdb
 import time
 import argparse
 import tqdm
+import shelve
 
 import sys
 import cv2
@@ -24,8 +25,8 @@ from models.vrd import VRD
 
 # assert torch.__version__.split('.')[1] == '4'
 thres = 0.2
-rel_thresh = 0.3
-attr_thresh = 0.3
+rel_thresh = 0.1
+attr_thresh = 0.1
 max_objects = 80
 
 use_gpu = True
@@ -44,6 +45,10 @@ def main(args=None):
     parser.add_argument('--csv_val', help='Path to file containing validation annotations (optional, see readme)')
     parser.add_argument('--net', help='Network to use', default='fasterrcnn')
     parser.add_argument('--set', help='Set on which evaluation will be performed', default='validation')
+    parser.add_argument('--store_detections', action='store_true', default=False,
+                        help='Cache all detections with very low threshold in order to enable filtering after extraction')
+    parser.add_argument('--load_detections', action='store_true', default=False,
+                        help='Load cached detections')
 
     parser.add_argument('--model_rel', help='Path to model (.pt) file for relationships.', default=None)
     parser.add_argument('--model_attr', help='Path to model (.pt) file for attributes.', default=None)
@@ -54,6 +59,16 @@ def main(args=None):
 
     assert parser.model_rel is not None and parser.model_attr is not None and parser.model_detector is not None, \
            'Models snapshots have to be specified!'
+    assert not (parser.load_detections and parser.store_detections)
+
+    det_output_path = os.path.split(parser.model_rel)[0]
+    if parser.store_detections:
+        # override the thresholds to very low values
+        thres = 0.05
+        rel_thresh = 0.05
+        attr_thresh = 0.05
+
+        print('Overriding thresholds: det:{} rel:{} attr:{}'.format(thres, rel_thresh, attr_thresh))
 
     if parser.dataset == 'openimages':
         dataset_val = OidDatasetVRD(parser.data_path, subset=parser.set,
@@ -96,33 +111,36 @@ def main(args=None):
 
     model.eval()
 
-    def draw_object_bb(image, box, caption):
-        b = np.array(box).astype(int)
-        cv2.putText(image, caption, (b[0], b[1] - 10), cv2.FONT_HERSHEY_PLAIN, 1, (0, 0, 0), 2)
-        cv2.putText(image, caption, (b[0], b[1] - 10), cv2.FONT_HERSHEY_PLAIN, 1, (255, 255, 255), 1)
-        cv2.rectangle(img, (b[0], b[1]), (b[2], b[3]), color=(0, 0, 255), thickness=2)
-
-    def draw_relationship(image, subj, obj, rel_name):
-        cv2.arrowedLine(image, (subj[0], subj[1]), (obj[0], obj[1]), (255, 0, 0), 2, tipLength=0.02)
-        cv2.putText(image, rel_name, ((subj[0] + obj[0]) / 2, (subj[1] + obj[1]) / 2), cv2.FONT_HERSHEY_PLAIN, 1, (0, 255, 0), 2)
-
     all_detections = []
+    if parser.load_detections or parser.store_detections:
+        print('Opening detections database file...')
+        loaded_detections = shelve.open(os.path.join(det_output_path, 'cached_detections.db'))
 
     for idx, data in enumerate(tqdm.tqdm(dataloader_val)):
-        with torch.no_grad():
-            st = time.time()
+        if parser.load_detections:
+            loaded_det = loaded_detections[str(idx)]
+            scores = loaded_det[0]
+            classification = loaded_det[1]
+            boxes = loaded_det[2]
+            relationships = loaded_det[3]
+            rel_scores = loaded_det[4]
+            attributes = loaded_det[5]
+            attr_scores = loaded_det[6]
+        else:
+            with torch.no_grad():
+                st = time.time()
 
-            images, targets = data
+                images, targets = data
 
-            # targets = [{k: v.cuda() for k, v in t.items()} for t in targets]
-            if use_gpu:
-                input_images = list(image.cuda().float() for image in images)
-            else:
-                input_images = list(image.float() for image in images)
-            # TODO: adapt retinanet output to the one by torchvision 0.3
-            # scores, classification, transformed_anchors = model(data_img.float())
-            outputs = model(input_images)
-            outputs = [{k: v.cpu() for k, v in t.items()} for t in outputs]
+                # targets = [{k: v.cuda() for k, v in t.items()} for t in targets]
+                if use_gpu:
+                    input_images = list(image.cuda().float() for image in images)
+                else:
+                    input_images = list(image.float() for image in images)
+                # TODO: adapt retinanet output to the one by torchvision 0.3
+                # scores, classification, transformed_anchors = model(data_img.float())
+                outputs = model(input_images)
+                outputs = [{k: v.cpu() for k, v in t.items()} for t in outputs]
 
             output = outputs[0]  # take the only batch
             scores = output['scores']
@@ -133,6 +151,9 @@ def main(args=None):
             attributes = output['attributes']
             attr_scores = output['attributes_scores']
 
+        if parser.store_detections:
+            loaded_detections[str(idx)] = [scores, classification, boxes, relationships, rel_scores, attributes, attr_scores]
+        else:
             subj_boxes_out = []
             subj_labels_out = []
             obj_boxes_out = []
@@ -173,11 +194,11 @@ def main(args=None):
             # if idx == 400:
             #    break
 
-    print('Evaluating...')
-    det_output_path = os.path.split(parser.model_rel)[0]
-    # TODO: add identification parameter to evaluate so that detections from different checkpoints are not overwritten
-    dataset_val.evaluate(all_detections, det_output_path, file_identifier='{}_relthr{}_attrthr{}_detthr{}'.format(parser.set, rel_thresh, attr_thresh, thres))
-    print('DONE!')
+    if not parser.store_detections:
+        print('Evaluating...')
+        # TODO: add identification parameter to evaluate so that detections from different checkpoints are not overwritten
+        dataset_val.evaluate(all_detections, det_output_path, file_identifier='{}_relthr{}_attrthr{}_detthr{}'.format(parser.set, rel_thresh, attr_thresh, thres))
+        print('DONE!')
 
 
 if __name__ == '__main__':

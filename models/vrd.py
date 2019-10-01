@@ -252,8 +252,13 @@ class RelationshipsModelsMultipleNets(RelationshipsModelBase):
         super().__init__(dataset, rel_context, use_labels)
         if rel_context == 'relation_box':
             self.context_net = nn.Sequential(
-                nn.Conv2d(256, 512, 2, stride=2),
+                nn.Conv2d(256, 512, 2, stride=1),
                 nn.BatchNorm2d(512),
+                nn.ReLU(),
+                nn.Conv2d(512, 1024, 2, stride=1),
+                nn.BatchNorm2d(1024),
+                nn.ReLU(),
+                nn.Conv2d(1024, 1024, 1),
                 nn.ReLU(),
                 nn.Dropout(),
             )
@@ -279,8 +284,8 @@ class RelationshipsModelsMultipleNets(RelationshipsModelBase):
         )
 
         self.objects_convnet = nn.Sequential(
-            nn.Conv2d(512, 1024, 2, stride=2),
-            nn.BatchNorm2d(1024),
+            nn.Conv2d(256, 512, 2, stride=2),
+            nn.BatchNorm2d(512),
             nn.ReLU(),
             nn.Dropout(),
         )
@@ -296,11 +301,11 @@ class RelationshipsModelsMultipleNets(RelationshipsModelBase):
             )
 
         # final classifier
-        input = 256 + 1024    # spatial features + objects
+        input = 256 + 512*4 * 2    # spatial features + objects
         if use_labels:
             input += 256
         if rel_context == 'relation_box' or rel_context == 'whole_image':
-            input += 512
+            input += 1024*4
         self.final_classifier = nn.Sequential(
             nn.Linear(input, 4096),
             nn.ReLU(),
@@ -336,10 +341,13 @@ class RelationshipsModelsMultipleNets(RelationshipsModelBase):
         # Forward through the net
         p_spatial = self.spatial_net(spatial_features)
 
-        p_objects = self.objects_convnet(pooled_subj_obj_regions)
-        p_objects = p_objects.mean(dim=(2, 3))  # global average pooling
+        p_subj = self.objects_convnet(pooled_subj_obj_regions[:, :256, :, :])
+        p_subj = p_subj.view(p_subj.size(0), -1)  # flatten
 
-        concat = torch.cat((p_objects, p_spatial), dim=1)
+        p_obj = self.objects_convnet(pooled_subj_obj_regions[:, 256:, :, :])
+        p_obj = p_obj.view(p_obj.size(0), -1)  # flatten
+
+        concat = torch.cat((p_subj, p_obj, p_spatial), dim=1)
         if self.use_labels:
             # Forward the label net
             p_labels = self.labels_net(one_hot_subj_obj_label)
@@ -348,7 +356,7 @@ class RelationshipsModelsMultipleNets(RelationshipsModelBase):
         if self.rel_context is not None:
             # Forward the context network
             p_context = self.context_net(pooled_rel_regions)
-            p_context = p_context.mean(dim=(2, 3))
+            p_context = p_context.view(p_context.size(0), -1)
             concat = torch.cat((concat, p_context), dim=1)
 
         rel_out = self.final_classifier(concat)

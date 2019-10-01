@@ -50,6 +50,8 @@ def main(args=None):
     parser.add_argument('--resume_rel', help='Checkpoint to load the relationships from')
     parser.add_argument('--detector_snapshot', help='Detector snapshot')
     parser.add_argument('--finetune_detector', action='store_true', default=False, help='Enable finetuning the detector')
+    parser.add_argument('--lr_step_size', type=int, default=20, help="After how many epochs the lr is decreased")
+    parser.add_argument('--lr', type=int, default=1e-4, help="Initial learning rate")
 
     parser.add_argument('--depth', help='Resnet depth, must be one of 18, 34, 50, 101, 152', type=int, default=50)
     parser.add_argument('--epochs', help='Number of epochs', type=int, default=100)
@@ -141,8 +143,8 @@ def main(args=None):
         model = model.cuda()
         model = torch.nn.DataParallel(model).cuda()
 
-    optimizer = optim.Adam(model.parameters(), lr=1e-4)
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=13)
+    optimizer = optim.Adam(model.parameters(), lr=parser.lr)
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=parser.lr_step_size)
 
     # Load checkpoint if needed
     start_epoch = 0
