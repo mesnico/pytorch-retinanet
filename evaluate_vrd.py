@@ -27,7 +27,7 @@ from models.vrd import VRD
 thres = 0.2
 rel_thresh = 0.1
 attr_thresh = 0.1
-max_objects = 80
+max_objects = 200
 
 use_gpu = True
 
@@ -37,6 +37,10 @@ print('CUDA available: {}'.format(torch.cuda.is_available()))
 
 
 def main(args=None):
+    global thres
+    global rel_thresh
+    global attr_thresh
+
     parser = argparse.ArgumentParser(description='Simple training script for training a RetinaNet network.')
 
     parser.add_argument('--dataset', help='Dataset type, must be one of csv or coco.')
@@ -62,13 +66,6 @@ def main(args=None):
     assert not (parser.load_detections and parser.store_detections)
 
     det_output_path = os.path.split(parser.model_rel)[0]
-    if parser.store_detections:
-        # override the thresholds to very low values
-        thres = 0.05
-        rel_thresh = 0.05
-        attr_thresh = 0.05
-
-        print('Overriding thresholds: det:{} rel:{} attr:{}'.format(thres, rel_thresh, attr_thresh))
 
     if parser.dataset == 'openimages':
         dataset_val = OidDatasetVRD(parser.data_path, subset=parser.set,
@@ -114,7 +111,8 @@ def main(args=None):
     all_detections = []
     if parser.load_detections or parser.store_detections:
         print('Opening detections database file...')
-        loaded_detections = shelve.open(os.path.join(det_output_path, 'cached_detections.db'))
+        flag = 'r' if parser.load_detections else 'c'
+        loaded_detections = shelve.open(os.path.join(det_output_path, 'cached_detections_detthr{}.db'.format(thres)), flag=flag)
 
     for idx, data in enumerate(tqdm.tqdm(dataloader_val)):
         if parser.load_detections:
@@ -154,6 +152,18 @@ def main(args=None):
         if parser.store_detections:
             loaded_detections[str(idx)] = [scores, classification, boxes, relationships, rel_scores, attributes, attr_scores]
         else:
+            '''if parser.load_detections:
+                pdb.set_trace()
+                # filter objects, relationships and attributes
+                filtered_idxs = np.where(scores > thres)[0]
+                scores = scores[filtered_idxs]
+                classification = classification[filtered_idxs]
+                boxes = boxes[filtered_idxs]
+                relationships = relationships[np.ix_(filtered_idxs, filtered_idxs)]
+                rel_scores = rel_scores[np.ix_(filtered_idxs, filtered_idxs)]
+                attributes = attributes[filtered_idxs]
+                attr_scores = attr_scores[filtered_idxs]
+            '''
             subj_boxes_out = []
             subj_labels_out = []
             obj_boxes_out = []
